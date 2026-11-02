@@ -2,25 +2,19 @@
 //
 // La URL de conexión NO vive acá: en Prisma 7 el CLI la lee desde
 // prisma.config.ts y el runtime la recibe vía driver adapter (PrismaPg),
-// configurado en src/prisma/prisma.service.ts.
+// configurado en src/prisma/services/prisma.service.ts.
 
 generator client {
   provider = "prisma-client"
 
-  // `prisma-client-js` está deprecado. El generador nuevo exige un `output`
-  // explícito y genera dentro del proyecto en vez de node_modules.
-  // Tiene que caer dentro de src/ porque tsconfig.build.json compila
-  // únicamente ese directorio (rootDir: ./src, include: ["src"]).
+  // El cliente se genera dentro de src/.
   output = "../src/generated/prisma"
 
-  // Query compiler en WASM: sin binario nativo de Rust, lo que permite usar
-  // imágenes Alpine sin instalar libssl.
+  // Query compiler en WASM, compatible con Alpine.
   engineType = "client"
   runtime    = "nodejs"
 
-  // El proyecto es ESM puro ("type": "module" + moduleResolution nodenext),
-  // así que el cliente se genera como ESM y sus imports relativos llevan la
-  // extensión .js que tsc espera al emitir.
+  // Configuración para ESM y TypeScript NodeNext.
   moduleFormat           = "esm"
   generatedFileExtension = "ts"
   importFileExtension    = "js"
@@ -30,6 +24,21 @@ datasource db {
   provider = "postgresql"
 }
 
+// ==========================================
+// ROLES DE USUARIO
+// ==========================================
+
+enum UserRole {
+  GERENTE
+  MESERO
+  COCINA
+  CLIENTE
+}
+
+// ==========================================
+// USUARIOS
+// ==========================================
+
 model User {
   id           String   @id @default(uuid()) @db.Uuid
   email        String   @unique
@@ -38,16 +47,22 @@ model User {
   createdAt    DateTime @default(now()) @map("created_at")
   updatedAt    DateTime @updatedAt @map("updated_at")
 
+  // Rol asignado al usuario.
+  role UserRole @default(CLIENTE)
+
   refreshTokens RefreshToken[]
 
   @@map("users")
 }
 
+// ==========================================
+// TOKENS DE AUTENTICACIÓN
+// ==========================================
+
 model RefreshToken {
   id String @id @default(uuid()) @db.Uuid
 
-  // Se guarda el SHA-256 del token, nunca el token en claro: si se filtra la
-  // base, los refresh tokens emitidos no son utilizables.
+  // Se almacena el hash SHA-256 del token.
   tokenHash String @unique @map("token_hash")
 
   userId String @map("user_id") @db.Uuid
@@ -59,4 +74,33 @@ model RefreshToken {
 
   @@index([userId])
   @@map("refresh_tokens")
+}
+
+// ==========================================
+// ESTADOS DE PLATILLOS
+// ==========================================
+
+enum DishStatus {
+  ACTIVE
+  DISABLED
+  OUT_OF_STOCK
+}
+
+// ==========================================
+// H1 - ACTUALIZACIÓN DE PLATILLOS
+// ==========================================
+
+model Dish {
+  id          String     @id @default(uuid()) @db.Uuid
+  name        String     @db.VarChar(100)
+  description String?    @db.VarChar(255)
+  price       Decimal    @db.Decimal(10, 2)
+  categoryId  String     @map("category_id") @db.Uuid
+  tags        String[]   @default([])
+  status      DishStatus @default(ACTIVE)
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("dishes")
 }
