@@ -12,6 +12,7 @@ import {
 
 import { UserRole } from '@PrismaClient';
 import { Roles } from '../auth/decorators/roles.decorator.js';
+import { Public } from '../auth/decorators/public.decorator.js';
 
 import { MenuService } from './menu.service.js';
 import { CreateDishDto } from './dto/create-dish.dto.js';
@@ -32,11 +33,25 @@ export class MenuController {
     return this.menuService.findAll();
   }
 
+  // H2: listado de sucursales públicas.
+  @Public()
+  @Get('branches')
+  findBranches() {
+    return this.menuService.findBranches();
+  }
+
+  // H2: menú vigente de una sucursal.
+  @Public()
+  @Get(':branchId')
+  findBranchMenu(@Param('branchId', ParseUUIDPipe) branchId: string) {
+    return this.menuService.findBranchMenu(branchId);
+  }
+
   // ==========================================
   // CONSULTAR UN PLATILLO POR ID
   // ==========================================
 
-  @Get(':id')
+  @Get('dish/:id')
   findOne(@Param('id', ParseUUIDPipe) id: string) {
     return this.menuService.findOne(id);
   }
