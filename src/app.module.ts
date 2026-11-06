@@ -8,6 +8,7 @@ import { PrismaModule } from '@Prisma';
 import { UsersModule } from '@Users';
 import { validateEnv } from '@Config';
 import { MenuModule } from './menu/menu.module.js';
+import { OrdersModule } from './orders/orders.module.js';
 import { RolesGuard } from './auth/guards/roles.guard.js';
 @Module({
   imports: [
@@ -22,6 +23,7 @@ import { RolesGuard } from './auth/guards/roles.guard.js';
     UsersModule,
     AuthModule,
     MenuModule,
+    OrdersModule,
   ],
   providers: [
     {
