@@ -20,3 +20,13 @@ export class CreateTakeawayOrderDto {
   @IsArray() @ArrayMinSize(1) @ValidateNested({ each: true }) @Type(() => OrderItemDto)
   items!: OrderItemDto[];
 }
+
+// H6: modificación de cantidades de los ítems existentes del pedido.
+export class UpdateOrderQuantityDto {
+  @IsUUID() itemId!: string;
+  @IsInt() @Min(1) quantity!: number;
+}
+export class UpdateTableOrderDto {
+  @IsArray() @ArrayMinSize(1) @ValidateNested({ each: true }) @Type(() => UpdateOrderQuantityDto)
+  items!: UpdateOrderQuantityDto[];
+}
