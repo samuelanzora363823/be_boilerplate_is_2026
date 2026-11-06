@@ -14,3 +14,9 @@ export class CreateTableOrderDto {
   @IsArray() @ArrayMinSize(1) @ValidateNested({ each: true }) @Type(() => OrderItemDto)
   items!: OrderItemDto[];
 }
+
+export class CreateTakeawayOrderDto {
+  @IsUUID() branchId!: string;
+  @IsArray() @ArrayMinSize(1) @ValidateNested({ each: true }) @Type(() => OrderItemDto)
+  items!: OrderItemDto[];
+}

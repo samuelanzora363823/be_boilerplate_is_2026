@@ -4,6 +4,8 @@ import { JwtModule } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { OrdersController } from './orders.controller.js';
 import { OrdersService } from './orders.service.js';
+import { TakeawayController } from './takeaway.controller.js';
+import { TakeawayService } from './takeaway.service.js';
 import { KitchenGateway } from './kitchen.gateway.js';
 
 @Module({
@@ -15,7 +17,7 @@ import { KitchenGateway } from './kitchen.gateway.js';
       }),
     }),
   ],
-  controllers: [OrdersController],
-  providers: [OrdersService, KitchenGateway],
+  controllers: [OrdersController, TakeawayController],
+  providers: [OrdersService, TakeawayService, KitchenGateway],
 })
 export class OrdersModule {}
