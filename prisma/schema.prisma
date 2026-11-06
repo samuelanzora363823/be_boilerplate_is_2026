@@ -51,6 +51,9 @@ model User {
   role UserRole @default(CLIENTE)
 
   refreshTokens RefreshToken[]
+  staffBranches StaffBranch[]
+  accountsAsCustomer Account[] @relation("AccountCustomer")
+  accountsAsWaiter Account[] @relation("AccountWaiter")
 
   @@map("users")
 }
@@ -108,6 +111,7 @@ model Dish {
 
   // Disponibilidad por sucursal.
   branchDishes BranchDish[]
+  orderItems OrderItem[]
 
   @@map("dishes")
 }
@@ -122,6 +126,10 @@ model Branch {
   isActive Boolean @default(true) @map("is_active")
 
   dishes BranchDish[]
+  tables RestaurantTable[]
+  staff StaffBranch[]
+  accounts Account[]
+  orders Order[]
 
   @@map("branches")
 }
@@ -155,4 +163,111 @@ model Category {
   dishes Dish[]
 
   @@map("categories")
+}
+
+// ==========================================
+// H4 - REGISTRO DE PEDIDOS EN MESA
+// ==========================================
+
+enum TableStatus {
+  FREE
+  OCCUPIED
+  RESERVED
+}
+
+enum AccountStatus {
+  OPEN
+  PAID
+  VOID
+}
+
+enum OrderStatus {
+  RECEIVED
+  IN_PREPARATION
+  READY
+  DELIVERED
+  CANCELLED
+}
+
+enum OrderItemStatus {
+  RECEIVED
+  IN_PREPARATION
+  READY
+  CANCELLED
+}
+
+// Permisos del personal por sucursal, reutilizables por H5-H9.
+model StaffBranch {
+  userId String @map("user_id") @db.Uuid
+  branchId String @map("branch_id") @db.Uuid
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  branch Branch @relation(fields: [branchId], references: [id], onDelete: Cascade)
+
+  @@id([userId, branchId])
+  @@map("staff_branches")
+}
+
+model RestaurantTable {
+  id String @id @default(uuid()) @db.Uuid
+  branchId String @map("branch_id") @db.Uuid
+  number Int
+  capacity Int
+  status TableStatus @default(FREE)
+  branch Branch @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  accounts Account[]
+
+  @@unique([branchId, number])
+  @@map("restaurant_tables")
+}
+
+model Account {
+  id String @id @default(uuid()) @db.Uuid
+  branchId String @map("branch_id") @db.Uuid
+  tableId String @map("table_id") @db.Uuid
+  customerId String? @map("customer_id") @db.Uuid
+  waiterId String @map("waiter_id") @db.Uuid
+  status AccountStatus @default(OPEN)
+  total Decimal @default(0) @db.Decimal(10, 2)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  branch Branch @relation(fields: [branchId], references: [id])
+  table RestaurantTable @relation(fields: [tableId], references: [id])
+  customer User? @relation("AccountCustomer", fields: [customerId], references: [id])
+  waiter User @relation("AccountWaiter", fields: [waiterId], references: [id])
+  orders Order[]
+
+  @@index([tableId, status])
+  @@map("accounts")
+}
+
+model Order {
+  id String @id @default(uuid()) @db.Uuid
+  accountId String @map("account_id") @db.Uuid
+  branchId String @map("branch_id") @db.Uuid
+  status OrderStatus @default(RECEIVED)
+  total Decimal @default(0) @db.Decimal(10, 2)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  account Account @relation(fields: [accountId], references: [id])
+  branch Branch @relation(fields: [branchId], references: [id])
+  items OrderItem[]
+
+  @@index([branchId, status, createdAt])
+  @@map("orders")
+}
+
+model OrderItem {
+  id String @id @default(uuid()) @db.Uuid
+  orderId String @map("order_id") @db.Uuid
+  dishId String @map("dish_id") @db.Uuid
+  quantity Int
+  notes String? @db.VarChar(100)
+  unitPrice Decimal @map("unit_price") @db.Decimal(10, 2)
+  subtotal Decimal @db.Decimal(10, 2)
+  status OrderItemStatus @default(RECEIVED)
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  dish Dish @relation(fields: [dishId], references: [id])
+
+  @@index([orderId])
+  @@map("order_items")
 }
