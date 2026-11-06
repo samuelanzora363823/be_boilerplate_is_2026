@@ -54,6 +54,7 @@ model User {
   staffBranches StaffBranch[]
   accountsAsCustomer Account[] @relation("AccountCustomer")
   accountsAsWaiter Account[] @relation("AccountWaiter")
+  takeawayOrders Order[] @relation("TakeawayCustomer")
 
   @@map("users")
 }
@@ -124,6 +125,10 @@ model Branch {
   id       String  @id @default(uuid()) @db.Uuid
   name     String  @unique @db.VarChar(100)
   isActive Boolean @default(true) @map("is_active")
+  code String? @unique @db.VarChar(12)
+  openingTime String @default("07:00") @map("opening_time") @db.VarChar(5)
+  closingTime String @default("22:00") @map("closing_time") @db.VarChar(5)
+  takeawayCounter Int @default(0) @map("takeaway_counter")
 
   dishes BranchDish[]
   tables RestaurantTable[]
@@ -182,6 +187,7 @@ enum AccountStatus {
 }
 
 enum OrderStatus {
+  PENDING_PAYMENT
   RECEIVED
   IN_PREPARATION
   READY
@@ -242,13 +248,16 @@ model Account {
 
 model Order {
   id String @id @default(uuid()) @db.Uuid
-  accountId String @map("account_id") @db.Uuid
+  accountId String? @map("account_id") @db.Uuid
+  customerId String? @map("customer_id") @db.Uuid
+  orderNumber String? @unique @map("order_number") @db.VarChar(40)
   branchId String @map("branch_id") @db.Uuid
   status OrderStatus @default(RECEIVED)
   total Decimal @default(0) @db.Decimal(10, 2)
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
-  account Account @relation(fields: [accountId], references: [id])
+  account Account? @relation(fields: [accountId], references: [id])
+  customer User? @relation("TakeawayCustomer", fields: [customerId], references: [id])
   branch Branch @relation(fields: [branchId], references: [id])
   items OrderItem[]
 
