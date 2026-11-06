@@ -57,6 +57,37 @@ export class MenuService {
     return this.dishRepository.findActiveByBranch(branchId);
   }
 
+  // H3: las categorías se listan aunque no tengan platillos disponibles,
+  // para que la interfaz pueda mostrarlas deshabilitadas.
+  async findCategories() {
+    return this.dishRepository.findCategories();
+  }
+
+  async filterBranchMenu(branchId: string, category: unknown, tags: unknown) {
+    const branch = await this.dishRepository.findBranch(branchId);
+    if (!branch) throw new NotFoundException('Sucursal no existe o está inactiva');
+
+    const parse = (value: unknown): string[] => {
+      if (value === undefined) return [];
+      if (typeof value !== 'string' || !value.trim()) {
+        throw new BadRequestException('Parámetros de filtro inválidos');
+      }
+      const values = value.split(',').map((v) => v.trim());
+      if (values.some((v) => !v)) throw new BadRequestException('Filtros vacíos');
+      return [...new Set(values)];
+    };
+
+    const categories = parse(category);
+    const diets = parse(tags);
+    if (categories.some((id) => !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id))) {
+      throw new BadRequestException('ID de categoría inválido');
+    }
+    if (diets.some((diet) => !['Vegetariano', 'Sin gluten'].includes(diet))) {
+      throw new BadRequestException('Etiqueta dietética inválida');
+    }
+    return this.dishRepository.findFilteredByBranch(branchId, categories, diets);
+  }
+
   // ==========================================
   // H1 - CONSULTAR TODOS LOS PLATILLOS
   // ==========================================

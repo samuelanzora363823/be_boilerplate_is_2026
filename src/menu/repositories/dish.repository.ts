@@ -76,6 +76,31 @@ export class DishRepository {
     }));
   }
 
+  // H3: opciones disponibles y filtrado sobre el menú activo de la sucursal.
+  async findCategories() {
+    return this.prisma.category.findMany({
+      select: { id: true, name: true },
+      orderBy: { name: 'asc' },
+    });
+  }
+
+  async findFilteredByBranch(branchId: string, categories: string[], tags: string[]) {
+    const dishes = await this.prisma.dish.findMany({
+      where: {
+        status: 'ACTIVE',
+        branchDishes: { some: { branchId, stockStatus: 'ACTIVE' } },
+        ...(categories.length ? { categoryId: { in: categories } } : {}),
+        ...(tags.length ? { tags: { hasSome: tags } } : {}),
+      },
+      select: {
+        id: true, name: true, description: true, price: true, tags: true,
+        category: { select: { id: true, name: true } },
+      },
+      orderBy: { name: 'asc' },
+    });
+    return dishes.map(({ category, ...dish }) => ({ ...dish, category: category.name, categoryId: category.id }));
+  }
+
   // ==========================================
   // H1 - CONSULTAR TODOS LOS PLATILLOS
   // ==========================================

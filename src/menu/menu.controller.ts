@@ -8,6 +8,7 @@ import {
   Patch,
   Post,
   Put,
+  Query,
 } from '@nestjs/common';
 
 import { UserRole } from '@PrismaClient';
@@ -38,6 +39,23 @@ export class MenuController {
   @Get('branches')
   findBranches() {
     return this.menuService.findBranches();
+  }
+
+  // H3: filtros públicos, antes de la ruta dinámica :branchId.
+  @Public()
+  @Get('categories')
+  findCategories() {
+    return this.menuService.findCategories();
+  }
+
+  @Public()
+  @Get(':branchId/filter')
+  filterBranchMenu(
+    @Param('branchId', ParseUUIDPipe) branchId: string,
+    @Query('category') category: unknown,
+    @Query('tags') tags: unknown,
+  ) {
+    return this.menuService.filterBranchMenu(branchId, category, tags);
   }
 
   // H2: menú vigente de una sucursal.
