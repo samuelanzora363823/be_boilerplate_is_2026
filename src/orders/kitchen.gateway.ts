@@ -36,5 +36,7 @@ export class KitchenGateway implements OnModuleDestroy {
     await new Promise<void>((resolve, reject) => { this.http!.once('error', reject); this.http!.listen(port, '0.0.0.0', resolve); });
   }
   notify(branchId: string, order: unknown) { this.io?.to(`kitchen_${branchId}`).emit('new_order', order); }
+  orderUpdated(branchId: string, order: unknown) { this.io?.to(`kitchen_${branchId}`).emit('order_updated', order); }
+  orderCancelled(branchId: string, order: unknown) { this.io?.to(`kitchen_${branchId}`).emit('order_cancelled', order); }
   async onModuleDestroy() { await this.io?.close(); this.http?.close(); }
 }
