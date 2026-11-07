@@ -170,6 +170,11 @@ export class MenuService {
     return this.dishRepository.update(id, data);
   }
 
+  async setDishImage(id: string, imageUrl: string) {
+    await this.findOne(id);
+    return this.dishRepository.update(id, { imageUrl });
+  }
+
   // ==========================================
   // H1 - DESHABILITAR PLATILLO
   // ==========================================

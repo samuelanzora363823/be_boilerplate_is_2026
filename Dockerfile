@@ -59,6 +59,7 @@ COPY --from=builder /app/prisma.config.ts ./prisma.config.ts
 COPY --from=builder /app/src/generated ./src/generated
 
 # La imagen de Node ya trae el usuario `node` sin privilegios.
+RUN mkdir -p /app/uploads/dishes && chown -R node:node /app/uploads
 USER node
 
 EXPOSE 3000

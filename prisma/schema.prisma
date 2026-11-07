@@ -99,6 +99,7 @@ model Dish {
   name        String  @db.VarChar(100)
   description String? @db.VarChar(255)
   price       Decimal @db.Decimal(10, 2)
+  imageUrl    String? @map("image_url") @db.VarChar(500)
 
   // Categoría del platillo.
   categoryId String   @map("category_id") @db.Uuid
@@ -272,6 +273,7 @@ model OrderItem {
   quantity Int
   notes String? @db.VarChar(100)
   unitPrice Decimal @map("unit_price") @db.Decimal(10, 2)
+  imageUrl    String? @map("image_url") @db.VarChar(500)
   subtotal Decimal @db.Decimal(10, 2)
   status OrderItemStatus @default(RECEIVED)
   order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
