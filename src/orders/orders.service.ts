@@ -76,6 +76,7 @@ export class OrdersService implements OnModuleInit {
         id: true,
         name: true,
         price: true,
+        imageUrl: true,
         category: {
           select: { name: true },
         },

@@ -53,6 +53,7 @@ export class DishRepository {
         id: true,
         name: true,
         description: true,
+        imageUrl: true,
         price: true,
         tags: true,
         category: {
@@ -93,7 +94,7 @@ export class DishRepository {
         ...(tags.length ? { tags: { hasSome: tags } } : {}),
       },
       select: {
-        id: true, name: true, description: true, price: true, tags: true,
+        id: true, name: true, description: true, price: true, imageUrl: true, tags: true,
         category: { select: { id: true, name: true } },
       },
       orderBy: { name: 'asc' },
@@ -180,6 +181,7 @@ export class DishRepository {
       categoryId?: string;
       tags?: string[];
       status?: 'ACTIVE' | 'DISABLED' | 'OUT_OF_STOCK';
+      imageUrl?: string;
     },
   ) {
     return this.prisma.dish.update({
