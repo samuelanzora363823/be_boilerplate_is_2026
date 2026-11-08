@@ -16,6 +16,9 @@ const fields: Array<[RegExp, string]> = [
   [/tipo/i, 'type'],
   [/cantidad/i, 'quantity'],
   [/motivo/i, 'reason'],
+  [/b[uú]squeda/i, 'search'],
+  [/^lowStock/i, 'lowStock'],
+  [/^page/i, 'page'],
   [/^limit/i, 'limit'],
   [/^property (\w+)/i, '$1'],
 ];

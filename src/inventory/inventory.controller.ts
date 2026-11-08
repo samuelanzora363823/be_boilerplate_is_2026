@@ -14,7 +14,7 @@ export class InventoryController {
   constructor(private readonly inventory: InventoryService) {}
 
   @Get() list(@CurrentUser() user: User, @Query() query: ListInventoryQueryDto) {
-    return this.inventory.list(user, query.limit ?? 100);
+    return this.inventory.list(user, query);
   }
 
   @Post('movements') @HttpCode(HttpStatus.CREATED)

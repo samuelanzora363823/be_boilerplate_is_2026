@@ -1,5 +1,5 @@
 import { Type } from 'class-transformer';
-import { IsEnum, IsInt, IsNumber, IsOptional, IsString, Length, Max, Min } from 'class-validator';
+import { IsEnum, IsIn, IsInt, IsNumber, IsOptional, IsString, Length, Max, MaxLength, Min } from 'class-validator';
 import { MovementType } from '../generated/prisma/client.js';
 
 // H14: registro de entradas y salidas de insumos.
@@ -22,8 +22,22 @@ export class CreateMovementDto {
   reason!: string;
 }
 
-// H14: lista de insumos para el formulario (GET /inventory?limit=100).
+// H15: consulta de existencias (H14 la usa con limit=100 para el formulario).
 export class ListInventoryQueryDto {
+  @IsOptional()
+  @IsString({ message: 'La búsqueda admite máximo 50 caracteres.' })
+  @MaxLength(50, { message: 'La búsqueda admite máximo 50 caracteres.' })
+  search?: string;
+
+  @IsOptional()
+  @IsIn(['true', 'false'], { message: 'lowStock debe ser true o false' })
+  lowStock?: 'true' | 'false';
+
+  @IsOptional() @Type(() => Number)
+  @IsInt({ message: 'page debe ser un entero mayor o igual a 1' })
+  @Min(1, { message: 'page debe ser un entero mayor o igual a 1' })
+  page?: number;
+
   @IsOptional() @Type(() => Number)
   @IsInt({ message: 'limit debe ser un entero' })
   @Min(1, { message: 'limit debe estar entre 1 y 100' })

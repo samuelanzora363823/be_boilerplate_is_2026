@@ -5,9 +5,13 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/services/prisma.service.js';
-import { CreateMovementDto } from './dto.js';
+import { CreateMovementDto, ListInventoryQueryDto } from './dto.js';
 import type { User } from '../generated/prisma/client.js';
 import { MovementType, Prisma } from '../generated/prisma/client.js';
+
+// Minúsculas y sin acentos, igual que Supply.searchName.
+const normalize = (text: string) =>
+  text.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
 
 @Injectable()
 export class InventoryService {
@@ -34,17 +38,38 @@ export class InventoryService {
   }
 
   // ==========================================
-  // H14 - INSUMOS DE LA SUCURSAL (para el formulario)
+  // H15 - CONSULTA DE EXISTENCIAS (también la usa el formulario de H14)
   // ==========================================
 
-  async list(user: User, limit: number) {
+  async list(user: User, query: ListInventoryQueryDto) {
     const branch = await this.branchOf(user);
-    const rows = await this.db.branchInventory.findMany({
-      where: { branchId: branch.id },
-      include: { supply: true },
-      orderBy: { supply: { name: 'asc' } },
-      take: limit,
-    });
+    const branchId = branch.id;
+    const page = query.page ?? 1;
+    const limit = query.limit ?? 20;
+    const search = normalize(query.search?.trim() ?? '');
+
+    // "Por agotarse": existencias menores o iguales al stock mínimo.
+    const lowStock: Prisma.BranchInventoryWhereInput = {
+      quantity: { lte: this.db.branchInventory.fields.minimumStock },
+    };
+
+    const where: Prisma.BranchInventoryWhereInput = {
+      branchId,
+      ...(search ? { supply: { searchName: { contains: search } } } : {}),
+      ...(query.lowStock === 'true' ? lowStock : {}),
+    };
+
+    const [rows, total, lowStockCount] = await this.db.$transaction([
+      this.db.branchInventory.findMany({
+        where,
+        include: { supply: true },
+        orderBy: { supply: { name: 'asc' } },
+        skip: (page - 1) * limit,
+        take: limit,
+      }),
+      this.db.branchInventory.count({ where }),
+      this.db.branchInventory.count({ where: { branchId, ...lowStock } }),
+    ]);
 
     return {
       data: rows.map((row) => ({
@@ -57,6 +82,10 @@ export class InventoryService {
         lowStock: row.quantity.lte(row.minimumStock),
         updatedAt: row.updatedAt,
       })),
+      total,
+      page,
+      limit,
+      lowStockCount,
       // Sucursal de la sesión, para el estado global del frontend.
       branch,
     };
