@@ -1,7 +1,8 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/services/prisma.service.js';
-import { NotificationSource } from '../generated/prisma/client.js';
-import type { Notification } from '../generated/prisma/client.js';
+import { NotificationSource, NotificationStatus } from '../generated/prisma/client.js';
+import type { Notification, User } from '../generated/prisma/client.js';
+import { ListNotificationsQueryDto } from './dto.js';
 
 // Registros que pueden originar un aviso (tabla de eventos de la Épica 9).
 export const REFERENCE_TYPES = ['Order', 'Dish', 'Reservation', 'InventoryAlert'] as const;
@@ -53,6 +54,83 @@ export class NotificationsService {
         }),
       ),
     );
+  }
+
+  // ==========================================
+  // H26 - BANDEJA DE NOTIFICACIONES
+  // Siempre se filtra por el usuario de la sesión (recipientId).
+  // ==========================================
+
+  async list(user: User, query: ListNotificationsQueryDto) {
+    const page = query.page ?? 1;
+    const limit = query.limit ?? 10;
+    const where = {
+      recipientId: user.id,
+      ...(query.status ? { status: query.status } : {}),
+      ...(query.sourceModule ? { sourceModule: query.sourceModule } : {}),
+    };
+
+    const [rows, total] = await this.db.$transaction([
+      this.db.notification.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        skip: (page - 1) * limit,
+        take: limit,
+      }),
+      this.db.notification.count({ where }),
+    ]);
+
+    return {
+      data: rows.map((row) => ({
+        id: row.id,
+        title: row.title,
+        message: row.message,
+        sourceModule: row.sourceModule,
+        referenceType: row.referenceType,
+        referenceId: row.referenceId,
+        status: row.status,
+        createdAt: row.createdAt,
+        readAt: row.readAt,
+      })),
+      total,
+      page,
+      limit,
+    };
+  }
+
+  async unreadCount(user: User) {
+    const count = await this.db.notification.count({
+      where: { recipientId: user.id, status: NotificationStatus.NO_LEIDA },
+    });
+    return { count };
+  }
+
+  async read(user: User, id: string) {
+    // Solo el dueño cambia su aviso y solo de No leída a Leída.
+    await this.db.notification.updateMany({
+      where: { id, recipientId: user.id, status: NotificationStatus.NO_LEIDA },
+      data: { status: NotificationStatus.LEIDA, readAt: new Date() },
+    });
+
+    const notification = await this.db.notification.findFirst({
+      where: { id, recipientId: user.id },
+      select: { id: true, status: true, readAt: true },
+    });
+
+    // Un aviso de otro usuario responde igual que uno inexistente.
+    if (!notification) {
+      throw new NotFoundException('El aviso no existe');
+    }
+
+    return notification;
+  }
+
+  async readAll(user: User) {
+    const { count } = await this.db.notification.updateMany({
+      where: { recipientId: user.id, status: NotificationStatus.NO_LEIDA },
+      data: { status: NotificationStatus.LEIDA, readAt: new Date() },
+    });
+    return { updated: count };
   }
 
   private validate(input: SendNotificationInput) {

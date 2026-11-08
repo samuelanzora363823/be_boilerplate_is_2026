@@ -2,7 +2,7 @@
 import 'dotenv/config';
 import bcrypt from 'bcrypt';
 import { PrismaPg } from '@prisma/adapter-pg';
-import { PrismaClient, UnitOfMeasure, UserRole } from '../src/generated/prisma/client.js';
+import { NotificationSource, NotificationStatus, PrismaClient, UnitOfMeasure, UserRole } from '../src/generated/prisma/client.js';
 
 const DEMO_EMAIL = 'demo@example.com';
 const DEMO_PASSWORD = 'Demo1234!';
@@ -240,6 +240,43 @@ async function main() {
         },
       });
     }
+  }
+
+  // ==========================================
+  // H26 - AVISOS DE PRUEBA PARA LA BANDEJA
+  // 3 para el cliente, 3 para el mesero y 1 para el gerente,
+  // con estados No leída y Leída (tabla de eventos de la Épica 9).
+  // ==========================================
+
+  const hace = (horas: number) => new Date(Date.now() - horas * 60 * 60 * 1000);
+
+  const avisos = [
+    { id: 'seed-aviso-cliente-1', recipientId: demo.id, sourceModule: NotificationSource.COCINA, title: 'Pedido listo', message: `Tu pedido ${assignedBranch.code ?? 'SE'}-1045 está listo para recoger.`, leida: false, horas: 1 },
+    { id: 'seed-aviso-cliente-2', recipientId: demo.id, sourceModule: NotificationSource.RESERVAS, title: 'Reservación confirmada', message: `Tu reservación para 4 personas en ${assignedBranch.name} el 10/11/2026 a las 19:00 está confirmada.`, leida: false, horas: 5 },
+    { id: 'seed-aviso-cliente-3', recipientId: demo.id, sourceModule: NotificationSource.RESERVAS, title: 'Reservación confirmada', message: `Tu reservación para 2 personas en ${assignedBranch.name} el 01/11/2026 a las 13:00 está confirmada.`, leida: true, horas: 48 },
+    { id: 'seed-aviso-mesero-1', recipientId: mesero.id, sourceModule: NotificationSource.COCINA, title: 'Pedido listo', message: 'El pedido de la mesa 4 está listo para entregar.', leida: false, horas: 1 },
+    { id: 'seed-aviso-mesero-2', recipientId: mesero.id, sourceModule: NotificationSource.COCINA, title: 'Platillo agotado', message: 'Hamburguesa clásica se agotó. Revise las comandas activas que lo contienen y sustitúyalo o cancélelo.', leida: false, horas: 3 },
+    { id: 'seed-aviso-mesero-3', recipientId: mesero.id, sourceModule: NotificationSource.COCINA, title: 'Pedido listo', message: 'El pedido de la mesa 2 está listo para entregar.', leida: true, horas: 24 },
+    { id: 'seed-aviso-gerente-1', recipientId: gerente.id, sourceModule: NotificationSource.INVENTARIO, title: 'Insumo por agotarse', message: `Tomate llegó a su stock mínimo (4 kg) en ${assignedBranch.name}.`, leida: false, horas: 2, referenceType: 'InventoryAlert' },
+  ];
+
+  for (const aviso of avisos) {
+    await prisma.notification.upsert({
+      where: { id: aviso.id },
+      update: {},
+      create: {
+        id: aviso.id,
+        recipientId: aviso.recipientId,
+        title: aviso.title,
+        message: aviso.message,
+        sourceModule: aviso.sourceModule,
+        referenceType: aviso.referenceType ?? null,
+        referenceId: aviso.referenceType ? 'seed-alerta-tomate' : null,
+        status: aviso.leida ? NotificationStatus.LEIDA : NotificationStatus.NO_LEIDA,
+        createdAt: hace(aviso.horas),
+        readAt: aviso.leida ? hace(aviso.horas - 1) : null,
+      },
+    });
   }
 
   console.log(
