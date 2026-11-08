@@ -15,9 +15,13 @@ export class InventoryService {
 
   // La sucursal sale de la sesión (StaffBranch), nunca del cuerpo de la petición.
   private async branch(user: User) {
+    return (await this.branchOf(user)).id;
+  }
+
+  private async branchOf(user: User) {
     const assignments = await this.db.staffBranch.findMany({
       where: { userId: user.id },
-      select: { branchId: true },
+      select: { branch: { select: { id: true, name: true } } },
     });
 
     if (assignments.length !== 1) {
@@ -26,7 +30,7 @@ export class InventoryService {
       );
     }
 
-    return assignments[0].branchId;
+    return assignments[0].branch;
   }
 
   // ==========================================
@@ -34,24 +38,28 @@ export class InventoryService {
   // ==========================================
 
   async list(user: User, limit: number) {
-    const branchId = await this.branch(user);
+    const branch = await this.branchOf(user);
     const rows = await this.db.branchInventory.findMany({
-      where: { branchId },
+      where: { branchId: branch.id },
       include: { supply: true },
       orderBy: { supply: { name: 'asc' } },
       take: limit,
     });
 
-    return rows.map((row) => ({
-      branchInventoryId: row.id,
-      supplyId: row.supplyId,
-      name: row.supply.name,
-      unit: row.supply.unit,
-      quantity: Number(row.quantity),
-      minimumStock: Number(row.minimumStock),
-      lowStock: row.quantity.lte(row.minimumStock),
-      updatedAt: row.updatedAt,
-    }));
+    return {
+      data: rows.map((row) => ({
+        branchInventoryId: row.id,
+        supplyId: row.supplyId,
+        name: row.supply.name,
+        unit: row.supply.unit,
+        quantity: Number(row.quantity),
+        minimumStock: Number(row.minimumStock),
+        lowStock: row.quantity.lte(row.minimumStock),
+        updatedAt: row.updatedAt,
+      })),
+      // Sucursal de la sesión, para el estado global del frontend.
+      branch,
+    };
   }
 
   // ==========================================
