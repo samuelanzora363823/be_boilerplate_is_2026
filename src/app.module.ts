@@ -9,6 +9,7 @@ import { UsersModule } from '@Users';
 import { validateEnv } from '@Config';
 import { MenuModule } from './menu/menu.module.js';
 import { OrdersModule } from './orders/orders.module.js';
+import { InventoryModule } from './inventory/inventory.module.js';
 import { RolesGuard } from './auth/guards/roles.guard.js';
 @Module({
   imports: [
@@ -24,6 +25,7 @@ import { RolesGuard } from './auth/guards/roles.guard.js';
     AuthModule,
     MenuModule,
     OrdersModule,
+    InventoryModule,
   ],
   providers: [
     {

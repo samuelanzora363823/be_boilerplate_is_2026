@@ -2,7 +2,7 @@
 import 'dotenv/config';
 import bcrypt from 'bcrypt';
 import { PrismaPg } from '@prisma/adapter-pg';
-import { PrismaClient, UserRole } from '../src/generated/prisma/client.js';
+import { PrismaClient, UnitOfMeasure, UserRole } from '../src/generated/prisma/client.js';
 
 const DEMO_EMAIL = 'demo@example.com';
 const DEMO_PASSWORD = 'Demo1234!';
@@ -183,6 +183,60 @@ async function main() {
           branchId: branch.id,
           number,
           capacity,
+        },
+      });
+    }
+  }
+
+  // ==========================================
+  // H14 - GERENTE POR SUCURSAL E INVENTARIO DE PRUEBA
+  // ==========================================
+
+  // El gerente necesita una sucursal para registrar movimientos de inventario.
+  const gerenteAssignment = await prisma.staffBranch.findFirst({
+    where: { userId: gerente.id },
+  });
+
+  if (!gerenteAssignment) {
+    await prisma.staffBranch.create({
+      data: { userId: gerente.id, branchId: assignedBranch.id },
+    });
+  }
+
+  const supplies: Array<[string, UnitOfMeasure, number, number]> = [
+    ['Tomate', UnitOfMeasure.KG, 20, 5],
+    ['Queso mozzarella', UnitOfMeasure.KG, 10, 3],
+    ['Harina', UnitOfMeasure.KG, 25, 10],
+    ['Aceite', UnitOfMeasure.L, 8, 2],
+    ['Huevos', UnitOfMeasure.UNIDAD, 120, 30],
+  ];
+
+  const normalize = (text: string) =>
+    text.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+
+  for (const [name, unit, quantity, minimumStock] of supplies) {
+    const supply = await prisma.supply.upsert({
+      where: { name },
+      update: {},
+      create: { name, searchName: normalize(name), unit },
+    });
+
+    for (const branch of branches) {
+      // En la sucursal del gerente el tomate inicia bajo el mínimo,
+      // para probar el estado "Por agotarse".
+      const initial =
+        branch.id === assignedBranch.id && name === 'Tomate' ? 4 : quantity;
+
+      await prisma.branchInventory.upsert({
+        where: {
+          branchId_supplyId: { branchId: branch.id, supplyId: supply.id },
+        },
+        update: {},
+        create: {
+          branchId: branch.id,
+          supplyId: supply.id,
+          quantity: initial,
+          minimumStock,
         },
       });
     }
