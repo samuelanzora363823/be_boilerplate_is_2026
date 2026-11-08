@@ -2,7 +2,7 @@
 import 'dotenv/config';
 import bcrypt from 'bcrypt';
 import { PrismaPg } from '@prisma/adapter-pg';
-import { NotificationSource, NotificationStatus, PrismaClient, UnitOfMeasure, UserRole } from '../src/generated/prisma/client.js';
+import { NotificationSource, NotificationStatus, OrderStatus, PrismaClient, UnitOfMeasure, UserRole } from '../src/generated/prisma/client.js';
 
 const DEMO_EMAIL = 'demo@example.com';
 const DEMO_PASSWORD = 'Demo1234!';
@@ -10,6 +10,7 @@ const DEMO_PASSWORD = 'Demo1234!';
 const GERENTE_EMAIL = 'gerente@example.com';
 const MESERO_EMAIL = 'mesero@example.com';
 const COCINA_EMAIL = 'cocina@example.com';
+const GERENTE_GENERAL_EMAIL = 'gerentegeneral@example.com';
 
 const adapter = new PrismaPg({
   connectionString: process.env.DATABASE_URL,
@@ -275,6 +276,78 @@ async function main() {
         status: aviso.leida ? NotificationStatus.LEIDA : NotificationStatus.NO_LEIDA,
         createdAt: hace(aviso.horas),
         readAt: aviso.leida ? hace(aviso.horas - 1) : null,
+      },
+    });
+  }
+
+  // ==========================================
+  // H29 - GERENTE GENERAL Y PEDIDOS DE PRUEBA
+  // El gerente general no tiene sucursal asignada: ve todas.
+  // ==========================================
+
+  const gerenteGeneralPassword = process.env.SEED_GERENTE_GENERAL_PASSWORD;
+
+  if (!gerenteGeneralPassword || gerenteGeneralPassword.length < 8) {
+    console.warn(
+      'SEED_GERENTE_GENERAL_PASSWORD no está configurada (mínimo 8 caracteres); no se creó el gerente general.',
+    );
+  } else {
+    const gerenteGeneral = await prisma.user.upsert({
+      where: { email: GERENTE_GENERAL_EMAIL },
+      update: { role: UserRole.GERENTE_GENERAL },
+      create: {
+        email: GERENTE_GENERAL_EMAIL,
+        passwordHash: await bcrypt.hash(gerenteGeneralPassword, 12),
+        role: UserRole.GERENTE_GENERAL,
+      },
+    });
+    console.log(`Gerente general listo: ${gerenteGeneral.email}`);
+  }
+
+  // Pedidos ya entregados en los últimos días, a distintas horas
+  // (UTC-6), más pedidos cancelados y pendientes de pago que el
+  // reporte de horarios pico no debe contar.
+  const hoyLocal = new Date(Date.now() - 6 * 60 * 60 * 1000);
+  const enHoraLocal = (diasAtras: number, hora: number, minuto: number) =>
+    new Date(
+      Date.UTC(
+        hoyLocal.getUTCFullYear(),
+        hoyLocal.getUTCMonth(),
+        hoyLocal.getUTCDate() - diasAtras,
+        hora + 6,
+        minuto,
+      ),
+    );
+
+  const pedidosPrueba: [number, number, number, OrderStatus][] = [
+    [1, 12, 5, OrderStatus.DELIVERED], [1, 12, 40, OrderStatus.DELIVERED],
+    [2, 12, 15, OrderStatus.DELIVERED], [3, 12, 30, OrderStatus.DELIVERED],
+    [4, 12, 10, OrderStatus.DELIVERED], [5, 12, 50, OrderStatus.DELIVERED],
+    [1, 13, 20, OrderStatus.DELIVERED], [2, 13, 5, OrderStatus.DELIVERED],
+    [3, 13, 45, OrderStatus.DELIVERED], [4, 13, 30, OrderStatus.DELIVERED],
+    [5, 13, 15, OrderStatus.DELIVERED],
+    [1, 19, 10, OrderStatus.DELIVERED], [1, 19, 35, OrderStatus.DELIVERED],
+    [2, 19, 20, OrderStatus.DELIVERED], [3, 19, 5, OrderStatus.DELIVERED],
+    [4, 19, 50, OrderStatus.DELIVERED], [5, 19, 25, OrderStatus.DELIVERED],
+    [1, 20, 15, OrderStatus.DELIVERED], [2, 20, 40, OrderStatus.DELIVERED],
+    [3, 20, 10, OrderStatus.DELIVERED], [4, 20, 30, OrderStatus.DELIVERED],
+    [2, 8, 15, OrderStatus.DELIVERED], [4, 8, 45, OrderStatus.DELIVERED],
+    [3, 15, 30, OrderStatus.DELIVERED],
+    [1, 18, 10, OrderStatus.CANCELLED], [2, 18, 20, OrderStatus.CANCELLED],
+    [3, 18, 30, OrderStatus.PENDING_PAYMENT],
+  ];
+
+  for (const [i, [diasAtras, hora, minuto, status]] of pedidosPrueba.entries()) {
+    const id = `29000000-0000-4000-8000-${String(i + 1).padStart(12, '0')}`;
+    await prisma.order.upsert({
+      where: { id },
+      update: {},
+      create: {
+        id,
+        branchId: assignedBranch.id,
+        status,
+        total: 12.5,
+        createdAt: enHoraLocal(diasAtras, hora, minuto),
       },
     });
   }

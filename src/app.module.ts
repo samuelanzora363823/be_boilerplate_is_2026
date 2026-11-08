@@ -11,6 +11,7 @@ import { MenuModule } from './menu/menu.module.js';
 import { OrdersModule } from './orders/orders.module.js';
 import { InventoryModule } from './inventory/inventory.module.js';
 import { NotificationsModule } from './notifications/notifications.module.js';
+import { ReportsModule } from './reports/reports.module.js';
 import { RolesGuard } from './auth/guards/roles.guard.js';
 @Module({
   imports: [
@@ -28,6 +29,7 @@ import { RolesGuard } from './auth/guards/roles.guard.js';
     OrdersModule,
     InventoryModule,
     NotificationsModule,
+    ReportsModule,
   ],
   providers: [
     {
