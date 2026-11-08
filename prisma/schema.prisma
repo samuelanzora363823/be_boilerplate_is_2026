@@ -55,6 +55,7 @@ model User {
   accountsAsCustomer Account[] @relation("AccountCustomer")
   accountsAsWaiter Account[] @relation("AccountWaiter")
   takeawayOrders Order[] @relation("TakeawayCustomer")
+  inventoryMovements InventoryMovement[]
 
   @@map("users")
 }
@@ -136,6 +137,7 @@ model Branch {
   staff StaffBranch[]
   accounts Account[]
   orders Order[]
+  inventories BranchInventory[]
 
   @@map("branches")
 }
@@ -281,4 +283,69 @@ model OrderItem {
 
   @@index([orderId])
   @@map("order_items")
+}
+
+// ==========================================
+// H14 - INVENTARIO DE INSUMOS
+// ==========================================
+
+enum UnitOfMeasure {
+  KG
+  G
+  L
+  ML
+  UNIDAD
+}
+
+enum MovementType {
+  ENTRADA
+  SALIDA
+}
+
+// Catálogo único de insumos para toda la cadena.
+model Supply {
+  id         String        @id @default(cuid())
+  name       String        @unique @db.VarChar(100)
+  // Nombre en minúsculas y sin acentos, para la búsqueda de H15.
+  searchName String        @map("search_name") @db.VarChar(100)
+  unit       UnitOfMeasure
+  createdAt  DateTime      @default(now()) @map("created_at")
+
+  inventories BranchInventory[]
+
+  @@map("supplies")
+}
+
+// Existencias de cada insumo por sucursal.
+model BranchInventory {
+  id           String   @id @default(cuid())
+  branchId     String   @map("branch_id") @db.Uuid
+  supplyId     String   @map("supply_id")
+  quantity     Decimal  @default(0) @db.Decimal(10, 3)
+  minimumStock Decimal  @map("minimum_stock") @db.Decimal(10, 3)
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  branch    Branch              @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  supply    Supply              @relation(fields: [supplyId], references: [id])
+  movements InventoryMovement[]
+
+  @@unique([branchId, supplyId])
+  @@map("branch_inventories")
+}
+
+// Historial de entradas y salidas. No se edita ni se elimina.
+model InventoryMovement {
+  id                String       @id @default(cuid())
+  branchInventoryId String       @map("branch_inventory_id")
+  type              MovementType
+  quantity          Decimal      @db.Decimal(10, 3)
+  reason            String       @db.VarChar(200)
+  createdById       String       @map("created_by_id") @db.Uuid
+  createdAt         DateTime     @default(now()) @map("created_at")
+
+  branchInventory BranchInventory @relation(fields: [branchInventoryId], references: [id])
+  createdBy       User            @relation(fields: [createdById], references: [id])
+
+  @@index([branchInventoryId, createdAt])
+  @@map("inventory_movements")
 }
