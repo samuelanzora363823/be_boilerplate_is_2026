@@ -139,6 +139,7 @@ model Branch {
   accounts Account[]
   orders Order[]
   inventories BranchInventory[]
+  inventoryAlerts InventoryAlert[]
 
   @@map("branches")
 }
@@ -313,6 +314,7 @@ model Supply {
   createdAt  DateTime      @default(now()) @map("created_at")
 
   inventories BranchInventory[]
+  inventoryAlerts InventoryAlert[]
 
   @@map("supplies")
 }
@@ -384,4 +386,25 @@ model Notification {
 
   @@index([recipientId, status, createdAt])
   @@map("notifications")
+}
+
+// H16 - Cada ciclo de escasez conserva una alerta, incluso si se atiende.
+enum InventoryAlertStatus {
+  ACTIVA
+  ATENDIDA
+}
+
+model InventoryAlert {
+  id              String               @id @default(cuid())
+  branchId        String               @map("branch_id") @db.Uuid
+  supplyId        String               @map("supply_id")
+  quantityAtAlert Decimal              @map("quantity_at_alert") @db.Decimal(10, 3)
+  status          InventoryAlertStatus @default(ACTIVA)
+  cycleOpen       Boolean              @default(true) @map("cycle_open")
+  createdAt       DateTime             @default(now()) @map("created_at")
+  branch          Branch               @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  supply          Supply               @relation(fields: [supplyId], references: [id])
+
+  @@index([branchId, status, createdAt])
+  @@map("inventory_alerts")
 }

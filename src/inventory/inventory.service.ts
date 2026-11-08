@@ -1,13 +1,16 @@
 import {
+  BadRequestException,
   ConflictException,
   ForbiddenException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/services/prisma.service.js';
 import { CreateMovementDto, ListInventoryQueryDto } from './dto.js';
 import type { User } from '../generated/prisma/client.js';
-import { MovementType, Prisma } from '../generated/prisma/client.js';
+import { NotificationsService } from '../notifications/notifications.service.js';
+import { InventoryAlertStatus, MovementType, NotificationSource, Prisma, UserRole } from '../generated/prisma/client.js';
 
 // Minúsculas y sin acentos, igual que Supply.searchName.
 const normalize = (text: string) =>
@@ -15,7 +18,8 @@ const normalize = (text: string) =>
 
 @Injectable()
 export class InventoryService {
-  constructor(private readonly db: PrismaService) {}
+  private readonly logger = new Logger(InventoryService.name);
+  constructor(private readonly db: PrismaService, private readonly notifications: NotificationsService) {}
 
   // La sucursal sale de la sesión (StaffBranch), nunca del cuerpo de la petición.
   private async branch(user: User) {
@@ -109,7 +113,7 @@ export class InventoryService {
       throw new NotFoundException('El insumo no existe en tu sucursal');
     }
 
-    return this.db.$transaction(async (tx) => {
+    const outcome = await this.db.$transaction(async (tx) => {
       // La condición sobre quantity evita que dos salidas simultáneas
       // dejen existencias negativas: solo una de las dos actualiza la fila.
       const updated = await tx.branchInventory.updateMany({
@@ -154,7 +158,31 @@ export class InventoryService {
         where: { id: inventory.id },
       });
 
-      return {
+      // El ciclo solo se rearma cuando la cantidad supera el mínimo.
+      // Una alerta ATENDIDA continúa bloqueando duplicados mientras siga bajo.
+      let alertId: string | null = null;
+      if (result.quantity.gt(result.minimumStock)) {
+        await tx.inventoryAlert.updateMany({
+          where: { branchId, supplyId: inventory.supplyId, cycleOpen: true },
+          data: { cycleOpen: false },
+        });
+      } else {
+        const existing = await tx.inventoryAlert.findFirst({
+          where: { branchId, supplyId: inventory.supplyId, cycleOpen: true },
+          select: { id: true },
+        });
+        if (!existing) {
+          const alert = await tx.inventoryAlert.create({
+            data: {
+              branchId, supplyId: inventory.supplyId,
+              quantityAtAlert: result.quantity,
+            },
+          });
+          alertId = alert.id;
+        }
+      }
+
+      return { alertId, movement: {
         id: movement.id,
         supplyId: inventory.supplyId,
         supplyName: inventory.supply.name,
@@ -168,7 +196,62 @@ export class InventoryService {
         lowStock: result.quantity.lte(result.minimumStock),
         createdAt: movement.createdAt,
         createdById: movement.createdById,
-      };
+      }};
     });
+
+    // La notificación se envía después de confirmar la transacción del movimiento.
+    // Un fallo de avisos no revierte un movimiento ya registrado.
+    if (outcome.alertId) {
+      try {
+        const managers = await this.db.user.findMany({
+          where: { role: UserRole.GERENTE, isActive: true, staffBranches: { some: { branchId } } },
+          select: { id: true },
+        });
+        // H25 limita cada envío a 50 destinatarios.
+        for (let i = 0; i < managers.length; i += 50) {
+          await this.notifications.send({
+            recipientIds: managers.slice(i, i + 50).map((manager) => manager.id),
+            title: 'Insumo por agotarse',
+            message: `${inventory.supply.name}: ${Number(outcome.movement.resultingQuantity)} ${inventory.supply.unit} disponibles (mínimo ${Number(outcome.movement.minimumStock)}).`,
+            sourceModule: NotificationSource.INVENTARIO,
+            referenceType: 'InventoryAlert',
+            referenceId: outcome.alertId,
+          });
+        }
+      } catch (error) {
+        this.logger.error(`No se pudo notificar la alerta ${outcome.alertId}`, error instanceof Error ? error.stack : String(error));
+      }
+    }
+    return outcome.movement;
+  }
+
+  async listAlerts(user: User) {
+    const branchId = await this.branch(user);
+    const rows = await this.db.inventoryAlert.findMany({
+      where: { branchId }, include: { supply: true },
+      orderBy: { createdAt: 'desc' }, take: 200,
+    });
+    return rows.map((alert) => ({
+      id: alert.id, supplyId: alert.supplyId, supplyName: alert.supply.name,
+      unit: alert.supply.unit, quantityAtAlert: Number(alert.quantityAtAlert),
+      status: alert.status, createdAt: alert.createdAt,
+    }));
+  }
+
+  async attendAlert(user: User, id: string, status: string) {
+    if (status !== 'Atendida') {
+      throw new BadRequestException('El estado solicitado debe ser Atendida');
+    }
+    const branchId = await this.branch(user);
+    const updated = await this.db.inventoryAlert.updateMany({
+      where: { id, branchId, status: InventoryAlertStatus.ACTIVA },
+      data: { status: InventoryAlertStatus.ATENDIDA },
+    });
+    if (!updated.count) {
+      const alert = await this.db.inventoryAlert.findFirst({ where: { id, branchId } });
+      if (!alert) throw new NotFoundException('La alerta no existe en tu sucursal');
+      throw new ConflictException('La alerta ya fue atendida');
+    }
+    return { id, status: 'Atendida' };
   }
 }
