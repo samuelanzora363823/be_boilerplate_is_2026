@@ -1,4 +1,4 @@
-import { Body, Controller, Get, HttpCode, HttpStatus, Post, Query, UseFilters } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, HttpStatus, Param, Patch, Post, Query, UseFilters } from '@nestjs/common';
 import { UserRole } from '../generated/prisma/client.js';
 import type { User } from '../generated/prisma/client.js';
 import { Roles } from '../auth/decorators/roles.decorator.js';
@@ -15,6 +15,16 @@ export class InventoryController {
 
   @Get() list(@CurrentUser() user: User, @Query() query: ListInventoryQueryDto) {
     return this.inventory.list(user, query);
+  }
+
+  @Get('alerts')
+  listAlerts(@CurrentUser() user: User) {
+    return this.inventory.listAlerts(user);
+  }
+
+  @Patch('alerts/:id/status')
+  attendAlert(@CurrentUser() user: User, @Param('id') id: string, @Body() body: { status: string }) {
+    return this.inventory.attendAlert(user, id, body?.status);
   }
 
   @Post('movements') @HttpCode(HttpStatus.CREATED)
