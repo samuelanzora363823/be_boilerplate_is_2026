@@ -7,6 +7,8 @@ import { OrdersService } from './orders.service.js';
 import { TakeawayController } from './takeaway.controller.js';
 import { TakeawayService } from './takeaway.service.js';
 import { KitchenGateway } from './kitchen.gateway.js';
+import { KitchenController } from './kitchen.controller.js';
+import { KitchenService } from './kitchen.service.js';
 
 @Module({
   imports: [
@@ -17,7 +19,16 @@ import { KitchenGateway } from './kitchen.gateway.js';
       }),
     }),
   ],
-  controllers: [OrdersController, TakeawayController],
-  providers: [OrdersService, TakeawayService, KitchenGateway],
+  controllers: [
+    OrdersController,
+    TakeawayController,
+    KitchenController,
+  ],
+  providers: [
+    OrdersService,
+    TakeawayService,
+    KitchenGateway,
+    KitchenService,
+  ],
 })
 export class OrdersModule {}
