@@ -1,17 +1,11 @@
-// Documentación: https://www.prisma.io/docs
-//
-// La URL de conexión NO vive acá: en Prisma 7 el CLI la lee desde
-// prisma.config.ts y el runtime la recibe vía driver adapter (PrismaPg),
-// configurado en src/prisma/services/prisma.service.ts.
-
 generator client {
-  provider = "prisma-client"
-  output = "../src/generated/prisma"
-  engineType = "client"
-  runtime = "nodejs"
-  moduleFormat = "esm"
+  provider               = "prisma-client"
+  output                 = "../src/generated/prisma"
+  engineType             = "client"
+  runtime                = "nodejs"
+  moduleFormat           = "esm"
   generatedFileExtension = "ts"
-  importFileExtension = "js"
+  importFileExtension    = "js"
 }
 
 datasource db {
@@ -49,14 +43,18 @@ model User {
   accountsAsCustomer Account[]           @relation("AccountCustomer")
   accountsAsWaiter   Account[]           @relation("AccountWaiter")
   takeawayOrders     Order[]             @relation("TakeawayCustomer")
-  paymentsProcessed Payment[]            @relation("PaymentProcessedBy")
+  paymentsProcessed  Payment[]           @relation("PaymentProcessedBy")
   inventoryMovements InventoryMovement[]
   notifications      Notification[]
   reservations       Reservation[]
 
-
   // H20 - Cuenta de puntos del cliente
   loyaltyAccount LoyaltyAccount?
+
+  // H22 - Configuración de fidelización
+  loyaltyRulesUpdated    LoyaltyRule[]    @relation("LoyaltyRuleUpdatedBy")
+  loyaltyBenefitsCreated LoyaltyBenefit[] @relation("LoyaltyBenefitCreatedBy")
+  loyaltyBenefitsUpdated LoyaltyBenefit[] @relation("LoyaltyBenefitUpdatedBy")
 
   @@map("users")
 }
@@ -66,13 +64,13 @@ model User {
 // ==========================================
 
 model RefreshToken {
-  id String @id @default(uuid()) @db.Uuid
-  tokenHash String @unique @map("token_hash")
-  userId String @map("user_id") @db.Uuid
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
-  expiresAt DateTime @map("expires_at")
+  id        String    @id @default(uuid()) @db.Uuid
+  tokenHash String    @unique @map("token_hash")
+  userId    String    @map("user_id") @db.Uuid
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime  @map("expires_at")
   revokedAt DateTime? @map("revoked_at")
-  createdAt DateTime @default(now()) @map("created_at")
+  createdAt DateTime  @default(now()) @map("created_at")
 
   @@index([userId])
   @@map("refresh_tokens")
@@ -126,7 +124,7 @@ model Branch {
   openingTime     String  @default("07:00") @map("opening_time") @db.VarChar(5)
   closingTime     String  @default("22:00") @map("closing_time") @db.VarChar(5)
   takeawayCounter Int     @default(0) @map("takeaway_counter")
-  receiptCounter Int @default(0) @map("receipt_counter")
+  receiptCounter  Int     @default(0) @map("receipt_counter")
 
   dishes          BranchDish[]
   tables          RestaurantTable[]
@@ -268,20 +266,21 @@ model Reservation {
 }
 
 model Account {
-  id         String          @id @default(uuid()) @db.Uuid
-  branchId   String          @map("branch_id") @db.Uuid
-  tableId    String          @map("table_id") @db.Uuid
-  customerId String?         @map("customer_id") @db.Uuid
-  waiterId   String          @map("waiter_id") @db.Uuid
-  status     AccountStatus   @default(OPEN)
-  total      Decimal         @default(0) @db.Decimal(10, 2)
-  createdAt  DateTime        @default(now()) @map("created_at")
-  updatedAt  DateTime        @updatedAt @map("updated_at")
-  branch     Branch          @relation(fields: [branchId], references: [id])
-  table      RestaurantTable @relation(fields: [tableId], references: [id])
-  customer   User?           @relation("AccountCustomer", fields: [customerId], references: [id])
-  waiter     User            @relation("AccountWaiter", fields: [waiterId], references: [id])
-  orders     Order[]
+  id         String        @id @default(uuid()) @db.Uuid
+  branchId   String        @map("branch_id") @db.Uuid
+  tableId    String        @map("table_id") @db.Uuid
+  customerId String?       @map("customer_id") @db.Uuid
+  waiterId   String        @map("waiter_id") @db.Uuid
+  status     AccountStatus @default(OPEN)
+  total      Decimal       @default(0) @db.Decimal(10, 2)
+  createdAt  DateTime      @default(now()) @map("created_at")
+  updatedAt  DateTime      @updatedAt @map("updated_at")
+
+  branch   Branch          @relation(fields: [branchId], references: [id])
+  table    RestaurantTable @relation(fields: [tableId], references: [id])
+  customer User?           @relation("AccountCustomer", fields: [customerId], references: [id])
+  waiter   User            @relation("AccountWaiter", fields: [waiterId], references: [id])
+  orders   Order[]
   payments Payment[]
   receipt  Receipt?
 
@@ -299,12 +298,13 @@ model Order {
   total       Decimal     @default(0) @db.Decimal(10, 2)
   createdAt   DateTime    @default(now()) @map("created_at")
   updatedAt   DateTime    @updatedAt @map("updated_at")
-  account     Account?    @relation(fields: [accountId], references: [id])
-  customer    User?       @relation("TakeawayCustomer", fields: [customerId], references: [id])
-  branch      Branch      @relation(fields: [branchId], references: [id])
-  items       OrderItem[]
-  payments    Payment[]
-  receipt     Receipt?
+
+  account  Account?    @relation(fields: [accountId], references: [id])
+  customer User?       @relation("TakeawayCustomer", fields: [customerId], references: [id])
+  branch   Branch      @relation(fields: [branchId], references: [id])
+  items    OrderItem[]
+  payments Payment[]
+  receipt  Receipt?
 
   @@index([branchId, status, createdAt])
   @@map("orders")
@@ -320,8 +320,9 @@ model OrderItem {
   imageUrl  String?         @map("image_url") @db.VarChar(500)
   subtotal  Decimal         @db.Decimal(10, 2)
   status    OrderItemStatus @default(RECEIVED)
-  order     Order           @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  dish      Dish            @relation(fields: [dishId], references: [id])
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  dish  Dish  @relation(fields: [dishId], references: [id])
 
   @@index([orderId])
   @@map("order_items")
@@ -345,45 +346,46 @@ enum MovementType {
 }
 
 model Supply {
-  id String @id @default(cuid())
-  name String @unique @db.VarChar(100)
-  searchName String @map("search_name") @db.VarChar(100)
-  unit UnitOfMeasure
-  createdAt DateTime @default(now()) @map("created_at")
+  id         String        @id @default(cuid())
+  name       String        @unique @db.VarChar(100)
+  searchName String        @map("search_name") @db.VarChar(100)
+  unit       UnitOfMeasure
+  createdAt  DateTime      @default(now()) @map("created_at")
 
   inventories     BranchInventory[]
   inventoryAlerts InventoryAlert[]
 
   @@map("supplies")
 }
+
 // ==========================================
 // H18 - PAGOS Y COMPROBANTES
 // ==========================================
 
 model Payment {
-  id             String        @id @default(uuid()) @db.Uuid
-  branchId       String        @map("branch_id") @db.Uuid
-  accountId      String?       @map("account_id") @db.Uuid
-  orderId        String?       @map("order_id") @db.Uuid
-  userId         String        @map("user_id") @db.Uuid
+  id        String  @id @default(uuid()) @db.Uuid
+  branchId  String  @map("branch_id") @db.Uuid
+  accountId String? @map("account_id") @db.Uuid
+  orderId   String? @map("order_id") @db.Uuid
+  userId    String  @map("user_id") @db.Uuid
 
-  method         PaymentMethod
-  status         PaymentStatus @default(APPROVED)
+  method PaymentMethod
+  status PaymentStatus @default(APPROVED)
 
-  amount         Decimal       @db.Decimal(10, 2)
-  amountReceived Decimal?      @map("amount_received") @db.Decimal(10, 2)
-  change         Decimal       @default(0) @db.Decimal(10, 2)
+  amount         Decimal  @db.Decimal(10, 2)
+  amountReceived Decimal? @map("amount_received") @db.Decimal(10, 2)
+  change         Decimal  @default(0) @db.Decimal(10, 2)
 
-  cardLast4      String?       @map("card_last4") @db.VarChar(4)
+  cardLast4 String? @map("card_last4") @db.VarChar(4)
 
-  createdAt      DateTime      @default(now()) @map("created_at")
+  createdAt DateTime @default(now()) @map("created_at")
 
-  branch         Branch        @relation(fields: [branchId], references: [id])
-  account        Account?      @relation(fields: [accountId], references: [id])
-  order          Order?        @relation(fields: [orderId], references: [id])
-  user           User          @relation("PaymentProcessedBy", fields: [userId], references: [id])
+  branch  Branch   @relation(fields: [branchId], references: [id])
+  account Account? @relation(fields: [accountId], references: [id])
+  order   Order?   @relation(fields: [orderId], references: [id])
+  user    User     @relation("PaymentProcessedBy", fields: [userId], references: [id])
 
-  receipt        Receipt?
+  receipt Receipt?
 
   @@index([accountId, status])
   @@index([orderId, status])
@@ -392,44 +394,39 @@ model Payment {
 }
 
 model Receipt {
-  id            String   @id @default(uuid()) @db.Uuid
-  branchId      String   @map("branch_id") @db.Uuid
-  paymentId     String   @unique @map("payment_id") @db.Uuid
-
-  accountId     String?  @unique @map("account_id") @db.Uuid
-  orderId       String?  @unique @map("order_id") @db.Uuid
-
-  receiptNumber Int      @map("receipt_number")
-  issuedAt      DateTime @default(now()) @map("issued_at")
-
-  subtotal      Decimal  @db.Decimal(10, 2)
-  discount      Decimal  @default(0) @db.Decimal(10, 2)
-  tax           Decimal  @db.Decimal(10, 2)
-  total         Decimal  @db.Decimal(10, 2)
-
+  id            String        @id @default(uuid()) @db.Uuid
+  branchId      String        @map("branch_id") @db.Uuid
+  paymentId     String        @unique @map("payment_id") @db.Uuid
+  accountId     String?       @unique @map("account_id") @db.Uuid
+  orderId       String?       @unique @map("order_id") @db.Uuid
+  receiptNumber Int           @map("receipt_number")
+  issuedAt      DateTime      @default(now()) @map("issued_at")
+  subtotal      Decimal       @db.Decimal(10, 2)
+  discount      Decimal       @default(0) @db.Decimal(10, 2)
+  tax           Decimal       @db.Decimal(10, 2)
+  total         Decimal       @db.Decimal(10, 2)
   paymentMethod PaymentMethod @map("payment_method")
-
   items         Json
 
-  branch        Branch  @relation(fields: [branchId], references: [id])
-  payment       Payment @relation(fields: [paymentId], references: [id])
-  account       Account? @relation(fields: [accountId], references: [id])
-  order         Order?   @relation(fields: [orderId], references: [id])
+  branch  Branch   @relation(fields: [branchId], references: [id])
+  payment Payment  @relation(fields: [paymentId], references: [id])
+  account Account? @relation(fields: [accountId], references: [id])
+  order   Order?   @relation(fields: [orderId], references: [id])
 
   @@unique([branchId, receiptNumber])
   @@map("receipts")
 }
 
 model BranchInventory {
-  id String @id @default(cuid())
-  branchId String @map("branch_id") @db.Uuid
-  supplyId String @map("supply_id")
-  quantity Decimal @default(0) @db.Decimal(10, 3)
-  minimumStock Decimal @map("minimum_stock") @db.Decimal(10, 3)
-  updatedAt DateTime @updatedAt @map("updated_at")
+  id           String   @id @default(cuid())
+  branchId     String   @map("branch_id") @db.Uuid
+  supplyId     String   @map("supply_id")
+  quantity     Decimal  @default(0) @db.Decimal(10, 3)
+  minimumStock Decimal  @map("minimum_stock") @db.Decimal(10, 3)
+  updatedAt    DateTime @updatedAt @map("updated_at")
 
-  branch Branch @relation(fields: [branchId], references: [id], onDelete: Cascade)
-  supply Supply @relation(fields: [supplyId], references: [id])
+  branch    Branch              @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  supply    Supply              @relation(fields: [supplyId], references: [id])
   movements InventoryMovement[]
 
   @@unique([branchId, supplyId])
@@ -437,16 +434,16 @@ model BranchInventory {
 }
 
 model InventoryMovement {
-  id String @id @default(cuid())
-  branchInventoryId String @map("branch_inventory_id")
-  type MovementType
-  quantity Decimal @db.Decimal(10, 3)
-  reason String @db.VarChar(200)
-  createdById String @map("created_by_id") @db.Uuid
-  createdAt DateTime @default(now()) @map("created_at")
+  id                String       @id @default(cuid())
+  branchInventoryId String       @map("branch_inventory_id")
+  type              MovementType
+  quantity          Decimal      @db.Decimal(10, 3)
+  reason            String       @db.VarChar(200)
+  createdById       String       @map("created_by_id") @db.Uuid
+  createdAt         DateTime     @default(now()) @map("created_at")
 
   branchInventory BranchInventory @relation(fields: [branchInventoryId], references: [id])
-  createdBy User @relation(fields: [createdById], references: [id])
+  createdBy       User            @relation(fields: [createdById], references: [id])
 
   @@index([branchInventoryId, createdAt])
   @@map("inventory_movements")
@@ -468,16 +465,16 @@ enum NotificationStatus {
 }
 
 model Notification {
-  id String @id @default(cuid())
-  recipientId String @map("recipient_id") @db.Uuid
-  title String @db.VarChar(100)
-  message String @db.VarChar(500)
-  sourceModule NotificationSource @map("source_module")
-  referenceType String? @map("reference_type") @db.VarChar(50)
-  referenceId String? @map("reference_id")
-  status NotificationStatus @default(NO_LEIDA)
-  createdAt DateTime @default(now()) @map("created_at")
-  readAt DateTime? @map("read_at")
+  id            String             @id @default(cuid())
+  recipientId   String             @map("recipient_id") @db.Uuid
+  title         String             @db.VarChar(100)
+  message       String             @db.VarChar(500)
+  sourceModule  NotificationSource @map("source_module")
+  referenceType String?            @map("reference_type") @db.VarChar(50)
+  referenceId   String?            @map("reference_id")
+  status        NotificationStatus @default(NO_LEIDA)
+  createdAt     DateTime           @default(now()) @map("created_at")
+  readAt        DateTime?          @map("read_at")
 
   recipient User @relation(fields: [recipientId], references: [id])
 
@@ -485,20 +482,24 @@ model Notification {
   @@map("notifications")
 }
 
+// ==========================================
 // H16 - ALERTAS DE INVENTARIO
+// ==========================================
+
 enum InventoryAlertStatus {
   ACTIVA
   ATENDIDA
 }
 
 model InventoryAlert {
-  id String @id @default(cuid())
-  branchId String @map("branch_id") @db.Uuid
-  supplyId String @map("supply_id")
-  quantityAtAlert Decimal @map("quantity_at_alert") @db.Decimal(10, 3)
-  status InventoryAlertStatus @default(ACTIVA)
-  cycleOpen Boolean @default(true) @map("cycle_open")
-  createdAt DateTime @default(now()) @map("created_at")
+  id              String               @id @default(cuid())
+  branchId        String               @map("branch_id") @db.Uuid
+  supplyId        String               @map("supply_id")
+  quantityAtAlert Decimal              @map("quantity_at_alert") @db.Decimal(10, 3)
+  status          InventoryAlertStatus @default(ACTIVA)
+  cycleOpen       Boolean              @default(true) @map("cycle_open")
+  createdAt       DateTime             @default(now()) @map("created_at")
+
   branch Branch @relation(fields: [branchId], references: [id], onDelete: Cascade)
   supply Supply @relation(fields: [supplyId], references: [id])
 
@@ -507,7 +508,7 @@ model InventoryAlert {
 }
 
 // ==========================================
-// H20 - ACUMULACION DE PUNTOS
+// H20 - ACUMULACIÓN DE PUNTOS
 // ==========================================
 
 enum LoyaltyMovementType {
@@ -515,29 +516,69 @@ enum LoyaltyMovementType {
 }
 
 model LoyaltyAccount {
-  id String @id @default(uuid()) @db.Uuid
-  userId String @unique @map("user_id") @db.Uuid
-  balance Int @default(0)
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @unique @map("user_id") @db.Uuid
+  balance   Int      @default(0)
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user      User              @relation(fields: [userId], references: [id], onDelete: Cascade)
   movements LoyaltyMovement[]
 
   @@map("loyalty_accounts")
 }
 
 model LoyaltyMovement {
-  id String @id @default(uuid()) @db.Uuid
-  loyaltyAccountId String @map("loyalty_account_id") @db.Uuid
-  type LoyaltyMovementType
-  points Int
-  paymentReference String @unique @map("payment_reference")
-  description String? @db.VarChar(255)
-  createdAt DateTime @default(now()) @map("created_at")
+  id               String              @id @default(uuid()) @db.Uuid
+  loyaltyAccountId String              @map("loyalty_account_id") @db.Uuid
+  type             LoyaltyMovementType
+  points           Int
+  paymentReference String              @unique @map("payment_reference")
+  description      String?             @db.VarChar(255)
+  createdAt        DateTime            @default(now()) @map("created_at")
 
   loyaltyAccount LoyaltyAccount @relation(fields: [loyaltyAccountId], references: [id], onDelete: Cascade)
 
   @@index([loyaltyAccountId, createdAt])
   @@map("loyalty_movements")
+}
+
+// ==========================================
+// H22 - REGLAS Y BENEFICIOS DE FIDELIZACIÓN
+// ==========================================
+
+enum LoyaltyDiscountType {
+  PERCENTAGE
+  FIXED
+}
+
+model LoyaltyRule {
+  // Una sola configuración global: el identificador fijo evita múltiples reglas.
+  id              String   @id @default("global") @db.VarChar(20)
+  pointsPerDollar Decimal  @default(1.0) @map("points_per_dollar") @db.Decimal(10, 2)
+  updatedById     String?  @map("updated_by_id") @db.Uuid
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  updatedBy User? @relation("LoyaltyRuleUpdatedBy", fields: [updatedById], references: [id], onDelete: SetNull)
+
+  @@map("loyalty_rules")
+}
+
+model LoyaltyBenefit {
+  id             String              @id @default(uuid()) @db.Uuid
+  name           String              @unique @db.VarChar(100)
+  pointsRequired Int                 @map("points_required")
+  discountType   LoyaltyDiscountType @map("discount_type")
+  discountValue  Decimal             @map("discount_value") @db.Decimal(10, 2)
+  isActive       Boolean             @default(true) @map("is_active")
+  createdById    String              @map("created_by_id") @db.Uuid
+  updatedById    String              @map("updated_by_id") @db.Uuid
+  createdAt      DateTime            @default(now()) @map("created_at")
+  updatedAt      DateTime            @updatedAt @map("updated_at")
+
+  createdBy User @relation("LoyaltyBenefitCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+  updatedBy User @relation("LoyaltyBenefitUpdatedBy", fields: [updatedById], references: [id], onDelete: Restrict)
+
+  @@map("loyalty_benefits")
 }
