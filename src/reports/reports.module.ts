@@ -1,11 +1,18 @@
 import { Module } from '@nestjs/common';
 import { ReportsController } from './reports.controller.js';
 import { ReportsService } from './reports.service.js';
+import { OccupancyController } from './occupancy.controller.js';
+import { OccupancyService } from './occupancy.service.js';
 
-// Módulo 10: reportes del gerente general (H29) y lista de sucursales
-// para sus filtros (GET /branches, usado por H27 a H29).
+// Reportes H27-H29 y consulta de ocupación H13.
 @Module({
-  controllers: [ReportsController],
-  providers: [ReportsService],
+  controllers: [
+    ReportsController,
+    OccupancyController,
+  ],
+  providers: [
+    ReportsService,
+    OccupancyService,
+  ],
 })
 export class ReportsModule {}

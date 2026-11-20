@@ -1,4 +1,3 @@
-
 import {
   BadRequestException,
   ConflictException,
@@ -10,7 +9,11 @@ import {
 
 import { PrismaService } from '../prisma/services/prisma.service.js';
 import { KitchenGateway } from './kitchen.gateway.js';
-import { CreateTableOrderDto, OpenAccountDto, UpdateTableOrderDto } from './dto.js';
+import {
+  CreateTableOrderDto,
+  OpenAccountDto,
+  UpdateTableOrderDto,
+} from './dto.js';
 import type { User } from '../generated/prisma/client.js';
 import { Prisma } from '../generated/prisma/client.js';
 
@@ -162,9 +165,7 @@ export class OrdersService implements OnModuleInit {
         e instanceof Prisma.PrismaClientKnownRequestError &&
         e.code === 'P2002'
       ) {
-        throw new ConflictException(
-          'La mesa ya tiene una cuenta abierta',
-        );
+        throw new ConflictException('La mesa ya tiene una cuenta abierta');
       }
 
       throw e;
@@ -175,9 +176,7 @@ export class OrdersService implements OnModuleInit {
     const branchId = await this.branch(user);
 
     if (!input.items?.length) {
-      throw new BadRequestException(
-        'El pedido no puede estar vacío',
-      );
+      throw new BadRequestException('El pedido no puede estar vacío');
     }
 
     const ids = input.items.map((i) => i.dishId);
@@ -198,19 +197,13 @@ export class OrdersService implements OnModuleInit {
         throw new NotFoundException('Cuenta inexistente');
       }
 
-      if (
-        account.branchId !== branchId ||
-        account.waiterId !== user.id
-      ) {
+      if (account.branchId !== branchId || account.waiterId !== user.id) {
         throw new ForbiddenException(
           'Cuenta fuera de tu sucursal o asignación',
         );
       }
 
-      if (
-        account.status !== 'OPEN' ||
-        account.table.status !== 'OCCUPIED'
-      ) {
+      if (account.status !== 'OPEN' || account.table.status !== 'OCCUPIED') {
         throw new ConflictException('Cuenta no abierta');
       }
 
@@ -233,15 +226,11 @@ export class OrdersService implements OnModuleInit {
         );
       }
 
-      const byId = new Map(
-        dishes.map((dish) => [dish.id, dish]),
-      );
+      const byId = new Map(dishes.map((dish) => [dish.id, dish]));
 
       const total = input.items.reduce(
         (sum, item) =>
-          sum.plus(
-            byId.get(item.dishId)!.price.mul(item.quantity),
-          ),
+          sum.plus(byId.get(item.dishId)!.price.mul(item.quantity)),
         new Prisma.Decimal(0),
       );
 
@@ -256,9 +245,7 @@ export class OrdersService implements OnModuleInit {
               quantity: item.quantity,
               notes: item.notes?.trim() || null,
               unitPrice: byId.get(item.dishId)!.price,
-              subtotal: byId
-                .get(item.dishId)!
-                .price.mul(item.quantity),
+              subtotal: byId.get(item.dishId)!.price.mul(item.quantity),
             })),
           },
         },
@@ -316,41 +303,106 @@ export class OrdersService implements OnModuleInit {
   // H6: solo el mesero responsable puede consultar los pedidos de su cuenta.
   async accountOrders(user: User, accountId: string) {
     const branchId = await this.branch(user);
-    const account = await this.db.account.findUnique({ where: { id: accountId } });
+    const account = await this.db.account.findUnique({
+      where: { id: accountId },
+    });
     if (!account) throw new NotFoundException('Cuenta inexistente');
-    if (account.branchId !== branchId || account.waiterId !== user.id) throw new ForbiddenException('No tienes acceso a esta cuenta');
+    if (account.branchId !== branchId || account.waiterId !== user.id)
+      throw new ForbiddenException('No tienes acceso a esta cuenta');
     return this.db.order.findMany({
-      where: { accountId }, orderBy: { createdAt: 'desc' },
-      select: { id: true, status: true, total: true, createdAt: true,
-        items: { select: { id: true, dishId: true, quantity: true, unitPrice: true, subtotal: true, notes: true, dish: { select: { name: true } } } } },
+      where: { accountId },
+      orderBy: { createdAt: 'desc' },
+      select: {
+        id: true,
+        status: true,
+        total: true,
+        createdAt: true,
+        items: {
+          select: {
+            id: true,
+            dishId: true,
+            quantity: true,
+            unitPrice: true,
+            subtotal: true,
+            notes: true,
+            dish: { select: { name: true } },
+          },
+        },
+      },
     });
   }
 
   async update(user: User, orderId: string, input: UpdateTableOrderDto) {
     const branchId = await this.branch(user);
-    if (!input.items?.length) throw new BadRequestException('Debes enviar al menos un platillo');
-    const ids = input.items.map(item => item.itemId);
-    if (new Set(ids).size !== ids.length) throw new BadRequestException('No repitas ítems');
-    const result = await this.db.$transaction(async tx => {
+    if (!input.items?.length)
+      throw new BadRequestException('Debes enviar al menos un platillo');
+    const ids = input.items.map((item) => item.itemId);
+    if (new Set(ids).size !== ids.length)
+      throw new BadRequestException('No repitas ítems');
+    const result = await this.db.$transaction(async (tx) => {
       // Bloquea la orden hasta completar el cambio: cocina no debe poder cambiar su estado a mitad de la operación.
       await tx.$queryRaw`SELECT id FROM orders WHERE id = ${orderId}::uuid FOR UPDATE`;
-      const order = await tx.order.findUnique({ where: { id: orderId }, include: { items: true, account: { include: { table: true } } } });
+      const order = await tx.order.findUnique({
+        where: { id: orderId },
+        include: { items: true, account: { include: { table: true } } },
+      });
       if (!order) throw new NotFoundException('Pedido inexistente');
-      if (!order.account || order.branchId !== branchId || order.account.waiterId !== user.id) throw new ForbiddenException('Pedido fuera de tu asignación');
-      if (order.status !== 'RECEIVED' || order.items.some(item => item.status !== 'RECEIVED')) throw new ConflictException('El pedido ya no está Recibido');
-      if (order.account.status !== 'OPEN') throw new ConflictException('La cuenta ya no está abierta');
-      if (ids.length !== order.items.length || order.items.some(item => !ids.includes(item.id))) throw new BadRequestException('Debes incluir todos los ítems existentes');
-      const quantities = new Map(input.items.map(item => [item.itemId, item.quantity]));
-      const newTotal = order.items.reduce((sum, item) => sum.plus(item.unitPrice.mul(quantities.get(item.id)!)), new Prisma.Decimal(0));
+      if (
+        !order.account ||
+        order.branchId !== branchId ||
+        order.account.waiterId !== user.id
+      )
+        throw new ForbiddenException('Pedido fuera de tu asignación');
+      if (
+        order.status !== 'RECEIVED' ||
+        order.items.some((item) => item.status !== 'RECEIVED')
+      )
+        throw new ConflictException('El pedido ya no está Recibido');
+      if (order.account.status !== 'OPEN')
+        throw new ConflictException('La cuenta ya no está abierta');
+      if (
+        ids.length !== order.items.length ||
+        order.items.some((item) => !ids.includes(item.id))
+      )
+        throw new BadRequestException(
+          'Debes incluir todos los ítems existentes',
+        );
+      const quantities = new Map(
+        input.items.map((item) => [item.itemId, item.quantity]),
+      );
+      const newTotal = order.items.reduce(
+        (sum, item) => sum.plus(item.unitPrice.mul(quantities.get(item.id)!)),
+        new Prisma.Decimal(0),
+      );
       for (const item of order.items) {
         const quantity = quantities.get(item.id)!;
-        await tx.orderItem.update({ where: { id: item.id }, data: { quantity, subtotal: item.unitPrice.mul(quantity) } });
+        await tx.orderItem.update({
+          where: { id: item.id },
+          data: { quantity, subtotal: item.unitPrice.mul(quantity) },
+        });
       }
-      await tx.order.update({ where: { id: orderId }, data: { total: newTotal } });
+      await tx.order.update({
+        where: { id: orderId },
+        data: { total: newTotal },
+      });
       // La cuenta agrega pedidos; recalculamos usando la diferencia de este pedido.
-      await tx.account.update({ where: { id: order.account.id }, data: { total: { increment: newTotal.minus(order.total) } } });
-      return { id: order.id, branchId, tableNumber: order.account.table.number, status: order.status, total: newTotal,
-        items: order.items.map(item => ({ id: item.id, dishId: item.dishId, quantity: quantities.get(item.id)!, subtotal: item.unitPrice.mul(quantities.get(item.id)!) })) };
+      await tx.account.update({
+        where: { id: order.account.id },
+        data: { total: { increment: newTotal.minus(order.total) } },
+      });
+      return {
+        id: order.id,
+        branchId,
+        tableNumber: order.account.table.number,
+        status: order.status,
+        total: newTotal,
+        items: order.items.map((item) => ({
+          id: item.id,
+          dishId: item.dishId,
+          quantity: quantities.get(item.id)!,
+          subtotal: item.unitPrice.mul(quantities.get(item.id)!),
+        })),
+      };
     });
     this.kitchen.orderUpdated(branchId, result);
     return result;
@@ -358,20 +410,233 @@ export class OrdersService implements OnModuleInit {
 
   async cancel(user: User, orderId: string) {
     const branchId = await this.branch(user);
-    const result = await this.db.$transaction(async tx => {
+    const result = await this.db.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT id FROM orders WHERE id = ${orderId}::uuid FOR UPDATE`;
-      const order = await tx.order.findUnique({ where: { id: orderId }, include: { items: true, account: { include: { table: true } } } });
+      const order = await tx.order.findUnique({
+        where: { id: orderId },
+        include: { items: true, account: { include: { table: true } } },
+      });
       if (!order) throw new NotFoundException('Pedido inexistente');
-      if (!order.account || order.branchId !== branchId || order.account.waiterId !== user.id) throw new ForbiddenException('Pedido fuera de tu asignación');
-      if (order.status !== 'RECEIVED' || order.items.some(item => item.status !== 'RECEIVED')) throw new ConflictException('El pedido ya no está Recibido');
-      if (order.account.status !== 'OPEN') throw new ConflictException('La cuenta ya no está abierta');
-      await tx.order.update({ where: { id: orderId }, data: { status: 'CANCELLED' } });
-      await tx.orderItem.updateMany({ where: { orderId }, data: { status: 'CANCELLED' } });
-      await tx.account.update({ where: { id: order.account.id }, data: { total: { decrement: order.total } } });
-      return { id: order.id, branchId, tableNumber: order.account.table.number, status: 'CANCELLED' as const };
+      if (
+        !order.account ||
+        order.branchId !== branchId ||
+        order.account.waiterId !== user.id
+      )
+        throw new ForbiddenException('Pedido fuera de tu asignación');
+      if (
+        order.status !== 'RECEIVED' ||
+        order.items.some((item) => item.status !== 'RECEIVED')
+      )
+        throw new ConflictException('El pedido ya no está Recibido');
+      if (order.account.status !== 'OPEN')
+        throw new ConflictException('La cuenta ya no está abierta');
+      await tx.order.update({
+        where: { id: orderId },
+        data: { status: 'CANCELLED' },
+      });
+      await tx.orderItem.updateMany({
+        where: { orderId },
+        data: { status: 'CANCELLED' },
+      });
+      await tx.account.update({
+        where: { id: order.account.id },
+        data: { total: { decrement: order.total } },
+      });
+      return {
+        id: order.id,
+        branchId,
+        tableNumber: order.account.table.number,
+        status: 'CANCELLED' as const,
+      };
     });
     this.kitchen.orderCancelled(branchId, result);
     return result;
   }
 
+  // H17: consultar el detalle completo de una cuenta.
+  async accountDetail(user: User, accountId: string) {
+    const branchId = await this.branch(user);
+
+    const account = await this.db.account.findUnique({
+      where: { id: accountId },
+      include: {
+        table: true,
+        customer: {
+          select: {
+            id: true,
+            email: true,
+          },
+        },
+        orders: {
+          where: {
+            status: { not: 'CANCELLED' },
+          },
+          orderBy: { createdAt: 'asc' },
+          include: {
+            items: {
+              include: {
+                dish: {
+                  select: {
+                    name: true,
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    });
+
+    if (!account) {
+      throw new NotFoundException('Cuenta inexistente');
+    }
+
+    if (account.branchId !== branchId || account.waiterId !== user.id) {
+      throw new ForbiddenException('No tienes acceso a esta cuenta');
+    }
+
+    const subtotal = account.orders.reduce(
+      (sum, order) =>
+        sum.plus(
+          order.items.reduce(
+            (itemSum, item) => itemSum.plus(item.subtotal),
+            new Prisma.Decimal(0),
+          ),
+        ),
+      new Prisma.Decimal(0),
+    );
+
+    const discount = new Prisma.Decimal(0);
+    const taxableAmount = subtotal.minus(discount);
+    const tax = taxableAmount.mul(0.13).toDecimalPlaces(2);
+    const total = taxableAmount.plus(tax).toDecimalPlaces(2);
+
+    return {
+      accountId: account.id,
+      status: account.status,
+      branchId: account.branchId,
+      tableId: account.tableId,
+      tableNumber: account.table.number,
+      customer: account.customer,
+      orders: account.orders.map((order) => ({
+        orderId: order.id,
+        status: order.status,
+        items: order.items.map((item) => ({
+          orderId: order.id,
+          productId: item.dishId,
+          productName: item.dish.name,
+          quantity: item.quantity,
+          unitPrice: item.unitPrice,
+          subtotal: item.subtotal,
+          status: item.status,
+        })),
+      })),
+      subtotal: subtotal.toDecimalPlaces(2),
+      discount,
+      tax,
+      total,
+    };
+  }
+
+  // H17: buscar un cliente mediante su correo electrónico.
+  async customerLookup(user: User, email: string) {
+    await this.branch(user);
+
+    if (!email || !email.trim()) {
+      throw new BadRequestException('Debes proporcionar un correo electrónico');
+    }
+
+    const normalizedEmail = email.trim().toLowerCase();
+
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
+      throw new BadRequestException('El correo electrónico no es válido');
+    }
+
+    const customer = await this.db.user.findUnique({
+      where: {
+        email: normalizedEmail,
+      },
+      select: {
+        id: true,
+        email: true,
+        role: true,
+        isActive: true,
+      },
+    });
+
+    if (!customer || customer.role !== 'CLIENTE' || !customer.isActive) {
+      throw new NotFoundException('Cliente no encontrado');
+    }
+
+    return {
+      customerId: customer.id,
+      email: customer.email,
+    };
+  }
+
+  // H17: validar si una cuenta puede iniciar el proceso de cobro.
+  async closeAccount(user: User, accountId: string) {
+    const branchId = await this.branch(user);
+
+    const account = await this.db.account.findUnique({
+      where: { id: accountId },
+      include: {
+        orders: {
+          select: {
+            id: true,
+            status: true,
+          },
+        },
+      },
+    });
+
+    if (!account) {
+      throw new NotFoundException('Cuenta inexistente');
+    }
+
+    if (account.branchId !== branchId || account.waiterId !== user.id) {
+      throw new ForbiddenException('No tienes acceso a esta cuenta');
+    }
+
+    if (account.status !== 'OPEN') {
+      throw new ConflictException('La cuenta no está abierta');
+    }
+
+    if (account.orders.length === 0) {
+      throw new ConflictException(
+        'No se puede cobrar una cuenta sin pedidos asociados',
+      );
+    }
+
+    const activeOrders = account.orders.filter(
+      (order) => order.status !== 'CANCELLED',
+    );
+
+    if (activeOrders.length === 0) {
+      throw new ConflictException(
+        'La cuenta no tiene pedidos activos para cobrar',
+      );
+    }
+
+    const pendingOrders = activeOrders.filter(
+      (order) => order.status !== 'DELIVERED',
+    );
+
+    if (pendingOrders.length > 0) {
+      throw new ConflictException(
+        'No se puede cerrar la cuenta porque existen pedidos pendientes de entrega',
+      );
+    }
+
+    const total = new Prisma.Decimal(account.total)
+      .mul(1.13)
+      .toDecimalPlaces(2);
+
+    return {
+      accountId: account.id,
+      status: account.status,
+      total,
+      canPay: true,
+    };
+  }
 }
