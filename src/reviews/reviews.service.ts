@@ -80,4 +80,45 @@ export class ReviewsService {
       throw error;
     }
   }
+
+  async listBranchReviews(
+    user: User,
+    branchId: string,
+    query: { page: number; limit: number },
+  ) {
+    const branch = await this.reviewsRepository.findBranch(branchId);
+    if (!branch) throw new NotFoundException('La sucursal no existe.');
+
+    const assignment = await this.reviewsRepository.findBranchAssignment(
+      user.id,
+      branchId,
+    );
+    if (!assignment) {
+      throw new ForbiddenException('No tienes acceso a esta sucursal.');
+    }
+
+    const result = await this.reviewsRepository.getBranchReviewPage(
+      branchId,
+      query.page,
+      query.limit,
+    );
+    const averageRating = result.totalReviews === 0 || result.ratingSum === null
+      ? null
+      : new Prisma.Decimal(result.ratingSum)
+          .dividedBy(result.totalReviews)
+          .toDecimalPlaces(2)
+          .toNumber();
+
+    return {
+      branchId,
+      averageRating,
+      totalReviews: result.totalReviews,
+      page: query.page,
+      limit: query.limit,
+      totalPages: result.totalReviews === 0
+        ? 0
+        : Math.ceil(result.totalReviews / query.limit),
+      reviews: result.reviews,
+    };
+  }
 }
