@@ -1,5 +1,7 @@
 import { Controller, Get, Query, UseFilters } from '@nestjs/common';
 import { UserRole } from '../generated/prisma/client.js';
+import type { User } from '../generated/prisma/client.js';
+import { CurrentUser } from '../auth/decorators/current-user.decorator.js';
 import { Roles } from '../auth/decorators/roles.decorator.js';
 import {
   BranchComparisonQueryDto,
@@ -21,6 +23,11 @@ export class ReportsController {
   @Get('branches')
   branches() {
     return this.reports.branches();
+  }
+
+  @Get('branches/assigned-to-me')
+  assignedBranches(@CurrentUser() user: User) {
+    return this.reports.assignedBranches(user.id);
   }
 
   @Get('reports/sales')

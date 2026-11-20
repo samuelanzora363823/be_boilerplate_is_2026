@@ -29,6 +29,19 @@ export class ReportsService {
     return { data };
   }
 
+  async assignedBranches(userId: string) {
+    const assignments = await this.prisma.staffBranch.findMany({
+      where: { userId },
+      select: {
+        branch: {
+          select: { id: true, name: true },
+        },
+      },
+    });
+
+    return assignments.map(({ branch }) => branch);
+  }
+
   // H27: ventas totales por sucursal en el período. Una venta es un
   // comprobante (solo existe cuando el pago está aprobado, H18 y H19);
   // el período se filtra por la fecha de emisión del comprobante.
