@@ -21,7 +21,6 @@ enum UserRole {
   MESERO
   COCINA
   CLIENTE
-  GERENTE_GENERAL
 }
 
 // ==========================================
@@ -47,6 +46,7 @@ model User {
   inventoryMovements InventoryMovement[]
   notifications      Notification[]
   reservations       Reservation[]
+  reviews            Review[]
 
   // H20 - Cuenta de puntos del cliente
   loyaltyAccount LoyaltyAccount?
@@ -136,6 +136,7 @@ model Branch {
   reservations    Reservation[]
   payments        Payment[]
   receipts        Receipt[]
+  reviews         Review[]
 
   @@map("branches")
 }
@@ -283,6 +284,7 @@ model Account {
   orders   Order[]
   payments Payment[]
   receipt  Receipt?
+  review   Review?
 
   @@index([tableId, status])
   @@map("accounts")
@@ -303,6 +305,7 @@ model Order {
   customer User?       @relation("TakeawayCustomer", fields: [customerId], references: [id])
   branch   Branch      @relation(fields: [branchId], references: [id])
   items    OrderItem[]
+  review   Review?
   payments Payment[]
   receipt  Receipt?
 
@@ -581,4 +584,29 @@ model LoyaltyBenefit {
   updatedBy User @relation("LoyaltyBenefitUpdatedBy", fields: [updatedById], references: [id], onDelete: Restrict)
 
   @@map("loyalty_benefits")
+}
+
+// ==========================================
+// RESEÑAS (Módulo 8, H23) — modelo creado para H30 con los campos
+// definidos en el documento de historias. Una reseña por compra:
+// la cuenta de mesa o el pedido para llevar.
+// ==========================================
+
+model Review {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  accountId String?  @unique @map("account_id") @db.Uuid
+  orderId   String?  @unique @map("order_id") @db.Uuid
+  branchId  String   @map("branch_id") @db.Uuid
+  rating    Int
+  comment   String?  @db.VarChar(500)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user    User     @relation(fields: [userId], references: [id])
+  account Account? @relation(fields: [accountId], references: [id])
+  order   Order?   @relation(fields: [orderId], references: [id])
+  branch  Branch   @relation(fields: [branchId], references: [id])
+
+  @@index([branchId, createdAt])
+  @@map("reviews")
 }

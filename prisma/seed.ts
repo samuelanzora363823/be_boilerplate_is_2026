@@ -2,7 +2,7 @@
 import 'dotenv/config';
 import bcrypt from 'bcrypt';
 import { PrismaPg } from '@prisma/adapter-pg';
-import { NotificationSource, NotificationStatus, OrderStatus, PrismaClient, UnitOfMeasure, UserRole } from '../src/generated/prisma/client.js';
+import { AccountStatus, NotificationSource, NotificationStatus, OrderStatus, PaymentMethod, PaymentStatus, Prisma, PrismaClient, UnitOfMeasure, UserRole } from '../src/generated/prisma/client.js';
 
 const DEMO_EMAIL = 'demo@example.com';
 const DEMO_PASSWORD = 'Demo1234!';
@@ -10,7 +10,6 @@ const DEMO_PASSWORD = 'Demo1234!';
 const GERENTE_EMAIL = 'gerente@example.com';
 const MESERO_EMAIL = 'mesero@example.com';
 const COCINA_EMAIL = 'cocina@example.com';
-const GERENTE_GENERAL_EMAIL = 'gerentegeneral@example.com';
 
 const adapter = new PrismaPg({
   connectionString: process.env.DATABASE_URL,
@@ -281,28 +280,8 @@ async function main() {
   }
 
   // ==========================================
-  // H29 - GERENTE GENERAL Y PEDIDOS DE PRUEBA
-  // El gerente general no tiene sucursal asignada: ve todas.
+  // H29 - PEDIDOS DE PRUEBA PARA HORARIOS PICO
   // ==========================================
-
-  const gerenteGeneralPassword = process.env.SEED_GERENTE_GENERAL_PASSWORD;
-
-  if (!gerenteGeneralPassword || gerenteGeneralPassword.length < 8) {
-    console.warn(
-      'SEED_GERENTE_GENERAL_PASSWORD no está configurada (mínimo 8 caracteres); no se creó el gerente general.',
-    );
-  } else {
-    const gerenteGeneral = await prisma.user.upsert({
-      where: { email: GERENTE_GENERAL_EMAIL },
-      update: { role: UserRole.GERENTE_GENERAL },
-      create: {
-        email: GERENTE_GENERAL_EMAIL,
-        passwordHash: await bcrypt.hash(gerenteGeneralPassword, 12),
-        role: UserRole.GERENTE_GENERAL,
-      },
-    });
-    console.log(`Gerente general listo: ${gerenteGeneral.email}`);
-  }
 
   // Pedidos ya entregados en los últimos días, a distintas horas
   // (UTC-6), más pedidos cancelados y pendientes de pago que el
@@ -348,6 +327,343 @@ async function main() {
         status,
         total: 12.5,
         createdAt: enHoraLocal(diasAtras, hora, minuto),
+      },
+    });
+  }
+
+  // ==========================================
+  // H27 - COMPROBANTES DE PRUEBA PARA EL REPORTE DE VENTAS
+  // Pedidos para llevar pagados con tarjeta, con su pago aprobado y su
+  // comprobante en cada sucursal, con el mismo cálculo de H18 (IVA 13 %). El correlativo de la sucursal avanza
+  // igual que en un cobro real, para no repetir números.
+  // ==========================================
+
+  const ventasPrueba: [number, number, number][] = [
+    // [sucursal (índice), días atrás, subtotal]
+    [0, 1, 18.5], [0, 2, 32], [0, 3, 12.75], [0, 4, 45.2],
+    [1, 1, 22], [1, 1, 15.5], [1, 2, 60], [1, 3, 27.3], [1, 5, 38.9], [1, 6, 9.75],
+  ];
+  const sucursalesVenta = [
+    branches.find((b) => b.id !== assignedBranch.id) ?? assignedBranch,
+    assignedBranch,
+  ];
+
+  for (const [i, [indice, diasAtras, monto]] of ventasPrueba.entries()) {
+    const receiptId = `27000000-0000-4000-8000-${String(i + 1).padStart(12, '0')}`;
+    const existe = await prisma.receipt.findUnique({ where: { id: receiptId } });
+    if (existe) continue;
+
+    const sucursal = sucursalesVenta[indice];
+    const subtotal = new Prisma.Decimal(monto);
+    const tax = subtotal.mul(0.13).toDecimalPlaces(2);
+    const total = subtotal.plus(tax).toDecimalPlaces(2);
+    const fecha = enHoraLocal(diasAtras, 13, i * 5);
+
+    await prisma.$transaction(async (tx) => {
+      const { receiptCounter } = await tx.branch.update({
+        where: { id: sucursal.id },
+        data: { receiptCounter: { increment: 1 } },
+        select: { receiptCounter: true },
+      });
+      const order = await tx.order.create({
+        data: {
+          id: `27200000-0000-4000-8000-${String(i + 1).padStart(12, '0')}`,
+          branchId: sucursal.id,
+          status: OrderStatus.DELIVERED,
+          total,
+          createdAt: fecha,
+        },
+      });
+      const payment = await tx.payment.create({
+        data: {
+          id: `27100000-0000-4000-8000-${String(i + 1).padStart(12, '0')}`,
+          branchId: sucursal.id,
+          orderId: order.id,
+          userId: mesero.id,
+          method: PaymentMethod.CARD,
+          status: PaymentStatus.APPROVED,
+          amount: total,
+          cardLast4: '4242',
+          createdAt: fecha,
+        },
+      });
+      await tx.receipt.create({
+        data: {
+          id: receiptId,
+          branchId: sucursal.id,
+          paymentId: payment.id,
+          orderId: order.id,
+          receiptNumber: receiptCounter,
+          issuedAt: fecha,
+          subtotal,
+          discount: 0,
+          tax,
+          total,
+          paymentMethod: PaymentMethod.CARD,
+          items: [
+            { productName: 'Consumo de prueba', quantity: 1, unitPrice: monto, subtotal: monto },
+          ],
+        },
+      });
+    });
+  }
+
+  // ==========================================
+  // H28 - VENTAS CON PLATILLOS PARA EL RANKING
+  // Usa los platillos activos del menú (H1): pedidos para llevar pagados
+  // y una cuenta de mesa pagada con un pedido cancelado, que el reporte
+  // no debe contar. Si el menú está vacío, no se crean.
+  // ==========================================
+
+  const platillos = await prisma.dish.findMany({
+    where: { status: 'ACTIVE' },
+    orderBy: { name: 'asc' },
+    take: 12,
+  });
+
+  if (platillos.length === 0) {
+    console.warn('No hay platillos activos; no se crearon las ventas de prueba de H28.');
+  } else {
+    const p = (i: number) => platillos[i % platillos.length];
+    const idH28 = (prefijo: string, n: number) =>
+      `${prefijo}-0000-4000-8000-${String(n).padStart(12, '0')}`;
+    let item = 0;
+
+    // Crea pedidos con sus platillos y los cobra con un solo pago y comprobante.
+    const vender = async (
+      n: number,
+      diasAtras: number,
+      pedidos: { cancelado?: boolean; items: [number, number][] }[],
+      mesa?: { tableId: string },
+    ) => {
+      const receiptId = idH28('28300000', n);
+      if (await prisma.receipt.findUnique({ where: { id: receiptId } })) return;
+      const fecha = enHoraLocal(diasAtras, 19, n);
+
+      await prisma.$transaction(async (tx) => {
+        const account = mesa
+          ? await tx.account.create({
+              data: {
+                id: idH28('28500000', n),
+                branchId: assignedBranch.id,
+                tableId: mesa.tableId,
+                waiterId: mesero.id,
+                status: AccountStatus.PAID,
+                createdAt: fecha,
+              },
+            })
+          : null;
+
+        let subtotal = new Prisma.Decimal(0);
+        const detalle: { productName: string; quantity: number; unitPrice: number; subtotal: number }[] = [];
+        let primerPedido = '';
+
+        for (const [k, pedido] of pedidos.entries()) {
+          const lineas = pedido.items.map(([indice, cantidad]) => {
+            const dish = p(indice);
+            return { dish, cantidad, sub: dish.price.mul(cantidad) };
+          });
+          const totalPedido = lineas.reduce((t, l) => t.plus(l.sub), new Prisma.Decimal(0));
+          const order = await tx.order.create({
+            data: {
+              id: idH28('28100000', n * 10 + k),
+              branchId: assignedBranch.id,
+              accountId: account?.id ?? null,
+              status: pedido.cancelado ? OrderStatus.CANCELLED : OrderStatus.DELIVERED,
+              total: totalPedido,
+              createdAt: fecha,
+              items: {
+                create: lineas.map((l) => ({
+                  id: idH28('28400000', ++item + n * 100),
+                  dishId: l.dish.id,
+                  quantity: l.cantidad,
+                  unitPrice: l.dish.price,
+                  subtotal: l.sub,
+                })),
+              },
+            },
+          });
+          if (!primerPedido) primerPedido = order.id;
+          if (pedido.cancelado) continue;
+          subtotal = subtotal.plus(totalPedido);
+          for (const l of lineas) {
+            detalle.push({
+              productName: l.dish.name,
+              quantity: l.cantidad,
+              unitPrice: l.dish.price.toNumber(),
+              subtotal: l.sub.toNumber(),
+            });
+          }
+        }
+
+        const tax = subtotal.mul(0.13).toDecimalPlaces(2);
+        const total = subtotal.plus(tax).toDecimalPlaces(2);
+        const { receiptCounter } = await tx.branch.update({
+          where: { id: assignedBranch.id },
+          data: { receiptCounter: { increment: 1 } },
+          select: { receiptCounter: true },
+        });
+        const payment = await tx.payment.create({
+          data: {
+            id: idH28('28200000', n),
+            branchId: assignedBranch.id,
+            accountId: account?.id ?? null,
+            orderId: account ? null : primerPedido,
+            userId: mesero.id,
+            method: PaymentMethod.CASH,
+            status: PaymentStatus.APPROVED,
+            amount: total,
+            amountReceived: total,
+            createdAt: fecha,
+          },
+        });
+        await tx.receipt.create({
+          data: {
+            id: receiptId,
+            branchId: assignedBranch.id,
+            paymentId: payment.id,
+            accountId: account?.id ?? null,
+            orderId: account ? null : primerPedido,
+            receiptNumber: receiptCounter,
+            issuedAt: fecha,
+            subtotal,
+            discount: 0,
+            tax,
+            total,
+            paymentMethod: PaymentMethod.CASH,
+            items: detalle,
+          },
+        });
+      });
+    };
+
+    // [índice de platillo, cantidad]
+    await vender(1, 1, [{ items: [[0, 3], [3, 2]] }]);
+    await vender(2, 2, [{ items: [[0, 2], [5, 4]] }]);
+    await vender(3, 3, [{ items: [[1, 3], [6, 1]] }]);
+    await vender(4, 4, [{ items: [[2, 5], [7, 2], [8, 1]] }]);
+    await vender(5, 5, [{ items: [[9, 1], [10, 2], [11, 1]] }]);
+
+    const mesa = await prisma.restaurantTable.findFirst({
+      where: { branchId: assignedBranch.id },
+      orderBy: { number: 'asc' },
+    });
+    if (mesa) {
+      // Cuenta de mesa: el segundo pedido está cancelado y no cuenta.
+      await vender(6, 2, [
+        { items: [[0, 2], [4, 3]] },
+        { cancelado: true, items: [[1, 10]] },
+      ], { tableId: mesa.id });
+    }
+  }
+
+  // ==========================================
+  // H30 - TERCERA SUCURSAL, VENTAS BAJAS Y RESEÑAS
+  // Al menos 3 sucursales con ventas de distinto monto, para que una
+  // quede marcada como "Requiere atención", y reseñas del cliente de
+  // prueba sobre sus compras (una por compra, calificación de 1 a 5).
+  // ==========================================
+
+  const santaTecla = await prisma.branch.upsert({
+    where: { name: 'Santa Tecla' },
+    update: {},
+    create: { name: 'Santa Tecla', code: 'ST' },
+  });
+
+  const ventasSantaTecla: [number, number][] = [
+    // [días atrás, subtotal]
+    [2, 8.5],
+    [4, 6.25],
+  ];
+
+  for (const [i, [diasAtras, monto]] of ventasSantaTecla.entries()) {
+    const n = String(i + 1).padStart(12, '0');
+    const receiptId = `30300000-0000-4000-8000-${n}`;
+    if (await prisma.receipt.findUnique({ where: { id: receiptId } })) continue;
+
+    const subtotal = new Prisma.Decimal(monto);
+    const tax = subtotal.mul(0.13).toDecimalPlaces(2);
+    const total = subtotal.plus(tax).toDecimalPlaces(2);
+    const fecha = enHoraLocal(diasAtras, 12, i * 7);
+
+    await prisma.$transaction(async (tx) => {
+      const { receiptCounter } = await tx.branch.update({
+        where: { id: santaTecla.id },
+        data: { receiptCounter: { increment: 1 } },
+        select: { receiptCounter: true },
+      });
+      const order = await tx.order.create({
+        data: {
+          id: `30100000-0000-4000-8000-${n}`,
+          branchId: santaTecla.id,
+          status: OrderStatus.DELIVERED,
+          total,
+          createdAt: fecha,
+        },
+      });
+      const payment = await tx.payment.create({
+        data: {
+          id: `30200000-0000-4000-8000-${n}`,
+          branchId: santaTecla.id,
+          orderId: order.id,
+          userId: mesero.id,
+          method: PaymentMethod.CARD,
+          status: PaymentStatus.APPROVED,
+          amount: total,
+          cardLast4: '4242',
+          createdAt: fecha,
+        },
+      });
+      await tx.receipt.create({
+        data: {
+          id: receiptId,
+          branchId: santaTecla.id,
+          paymentId: payment.id,
+          orderId: order.id,
+          receiptNumber: receiptCounter,
+          issuedAt: fecha,
+          subtotal,
+          discount: 0,
+          tax,
+          total,
+          paymentMethod: PaymentMethod.CARD,
+          items: [
+            { productName: 'Consumo de prueba', quantity: 1, unitPrice: monto, subtotal: monto },
+          ],
+        },
+      });
+    });
+  }
+
+  // Reseñas sobre compras pagadas (pedidos para llevar de H27 y H30).
+  const resenas: [string, number, string][] = [
+    // [pedido reseñado, calificación, comentario]
+    ['27200000-0000-4000-8000-000000000001', 4, 'Buena atención.'],
+    ['27200000-0000-4000-8000-000000000002', 5, 'Todo excelente.'],
+    ['27200000-0000-4000-8000-000000000005', 5, 'Muy rápido.'],
+    ['27200000-0000-4000-8000-000000000006', 4, 'Rico, volvería.'],
+    ['27200000-0000-4000-8000-000000000007', 3, 'La comida llegó fría.'],
+    ['30100000-0000-4000-8000-000000000001', 2, 'Tardaron mucho.'],
+  ];
+
+  for (const [i, [orderId, rating, comment]] of resenas.entries()) {
+    const id = `30400000-0000-4000-8000-${String(i + 1).padStart(12, '0')}`;
+    const pedido = await prisma.order.findUnique({
+      where: { id: orderId },
+      select: { branchId: true, createdAt: true },
+    });
+    if (!pedido) continue;
+    await prisma.review.upsert({
+      where: { id },
+      update: {},
+      create: {
+        id,
+        userId: demo.id,
+        orderId,
+        branchId: pedido.branchId,
+        rating,
+        comment,
+        createdAt: new Date(pedido.createdAt.getTime() + 60 * 60 * 1000),
       },
     });
   }

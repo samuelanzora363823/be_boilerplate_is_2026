@@ -47,13 +47,13 @@ export class LoyaltyController {
   // ==========================================
 
   @Get('rules')
-  @Roles(UserRole.GERENTE_GENERAL)
+  @Roles(UserRole.GERENTE)
   getRule() {
     return this.loyaltyService.getRule();
   }
 
   @Put('rules')
-  @Roles(UserRole.GERENTE_GENERAL)
+  @Roles(UserRole.GERENTE)
   updateRule(
     @Body() dto: UpdateLoyaltyRuleDto,
     @CurrentUser() user: User,
@@ -70,14 +70,14 @@ export class LoyaltyController {
 
   // Consultar todos los beneficios.
   @Get('benefits')
-  @Roles(UserRole.GERENTE_GENERAL)
+  @Roles(UserRole.GERENTE)
   getBenefits() {
     return this.loyaltyService.getBenefits();
   }
 
   // Crear un beneficio.
   @Post('benefits')
-  @Roles(UserRole.GERENTE_GENERAL)
+  @Roles(UserRole.GERENTE)
   createBenefit(
     @Body() dto: CreateLoyaltyBenefitDto,
     @CurrentUser() user: User,
@@ -90,7 +90,7 @@ export class LoyaltyController {
 
   // Activar o desactivar un beneficio.
   @Patch('benefits/:id/status')
-  @Roles(UserRole.GERENTE_GENERAL)
+  @Roles(UserRole.GERENTE)
   updateBenefitStatus(
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: UpdateLoyaltyBenefitStatusDto,
