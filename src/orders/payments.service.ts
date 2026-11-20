@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common';
 
 import {
+  LoyaltyRedemptionReleaseReason,
   PaymentMethod,
   PaymentStatus,
   UserRole,
@@ -50,15 +51,22 @@ export class PaymentsService {
   }
 
   // Calcular subtotal, descuento, IVA y total.
-  private calculateAmounts(subtotal: Prisma.Decimal) {
-    const discount = new Prisma.Decimal(0);
-    const taxableAmount = subtotal.minus(discount);
-    const tax = taxableAmount.mul(0.13).toDecimalPlaces(2);
+  private calculateAmounts(
+    subtotal: Prisma.Decimal,
+    discount = new Prisma.Decimal(0),
+  ) {
+    const roundedSubtotal = subtotal.toDecimalPlaces(2);
+    const roundedDiscount = discount.toDecimalPlaces(2);
+    if (roundedDiscount.lt(0) || roundedDiscount.gt(roundedSubtotal)) {
+      throw new ConflictException('El canje tiene un descuento incompatible con la compra.');
+    }
+    const taxableAmount = roundedSubtotal.minus(roundedDiscount);
+    const tax = taxableAmount.mul(new Prisma.Decimal('0.13')).toDecimalPlaces(2);
     const total = taxableAmount.plus(tax).toDecimalPlaces(2);
 
     return {
-      subtotal: subtotal.toDecimalPlaces(2),
-      discount,
+      subtotal: roundedSubtotal,
+      discount: roundedDiscount,
       tax,
       total,
     };
@@ -70,6 +78,7 @@ export class PaymentsService {
     input: { accountId?: string; orderId?: string },
     branchId: string,
     user: User,
+    validateEligibility = true,
   ) {
     if (Boolean(input.accountId) === Boolean(input.orderId)) {
       throw new BadRequestException(
@@ -108,13 +117,14 @@ export class PaymentsService {
         throw new ForbiddenException('No tienes acceso a esta cuenta');
       }
 
-      if (account.status !== 'OPEN') {
+      if (validateEligibility && account.status !== 'OPEN') {
         throw new ConflictException('La cuenta no está abierta');
       }
 
       if (
-        account.orders.length === 0 ||
-        account.orders.some((order) => order.status !== 'DELIVERED')
+        validateEligibility &&
+        (account.orders.length === 0 ||
+          account.orders.some((order) => order.status !== 'DELIVERED'))
       ) {
         throw new ConflictException(
           'La cuenta tiene pedidos pendientes de entrega',
@@ -156,7 +166,7 @@ export class PaymentsService {
       );
     }
 
-    if (order.status !== 'PENDING_PAYMENT') {
+    if (validateEligibility && order.status !== 'PENDING_PAYMENT') {
       throw new ConflictException(
         'El pedido no está pendiente de pago',
       );
@@ -166,6 +176,110 @@ export class PaymentsService {
       type: 'ORDER' as const,
       order,
     };
+  }
+
+  private async lockPurchaseForPayment(
+    tx: Prisma.TransactionClient,
+    purchase: { accountId?: string; orderId?: string },
+  ) {
+    if (purchase.accountId) {
+      const rows = await tx.$queryRaw<Array<{ id: string }>>`
+        SELECT "id" FROM "accounts"
+        WHERE "id" = ${purchase.accountId}::uuid
+        FOR UPDATE
+      `;
+      if (!rows.length) throw new NotFoundException('Cuenta inexistente');
+      return;
+    }
+
+    const rows = await tx.$queryRaw<Array<{ id: string }>>`
+      SELECT "id" FROM "orders"
+      WHERE "id" = ${purchase.orderId!}::uuid
+      FOR UPDATE
+    `;
+    if (!rows.length) throw new NotFoundException('Pedido inexistente');
+  }
+
+  private async prepareRedemptionForPayment(
+    tx: Prisma.TransactionClient,
+    purchase: { accountId?: string; orderId?: string },
+    customerId: string | null,
+  ) {
+    // Initial lookup is intentionally unlocked. If a reservation exists, lock
+    // its points account before the purchase, matching H21's reservation order.
+    const initial = await this.loyalty.findReservedRedemptionForPurchase(
+      tx,
+      purchase,
+    );
+    const loyaltyAccount = await this.loyalty.lockLoyaltyAccountForPayment(tx, {
+      ...(initial
+        ? { loyaltyAccountId: initial.loyaltyAccountId }
+        : customerId
+          ? { userId: customerId }
+          : {}),
+    });
+
+    await this.lockPurchaseForPayment(tx, purchase);
+
+    const current = await this.loyalty.findReservedRedemptionForPurchase(
+      tx,
+      purchase,
+    );
+    if (initial && (!current || current.id !== initial.id)) {
+      throw new ConflictException('El canje cambió mientras se iniciaba el pago.');
+    }
+
+    if (
+      current &&
+      (current.accountId !== (purchase.accountId ?? null) ||
+        current.orderId !== (purchase.orderId ?? null))
+    ) {
+      throw new ConflictException('El canje no corresponde a esta compra.');
+    }
+
+    const freshCustomerId = purchase.accountId
+      ? (await tx.account.findUnique({
+          where: { id: purchase.accountId },
+          select: { customerId: true },
+        }))?.customerId ?? null
+      : (await tx.order.findUnique({
+          where: { id: purchase.orderId! },
+          select: { customerId: true },
+        }))?.customerId ?? null;
+    if (freshCustomerId !== customerId) {
+      throw new ConflictException('El propietario de la compra cambió durante el pago.');
+    }
+
+    if (current) {
+      if (
+        !loyaltyAccount ||
+        current.loyaltyAccountId !== loyaltyAccount.id ||
+        current.loyaltyAccount.userId !== customerId
+      ) {
+        throw new ConflictException('El canje no pertenece al cliente de la compra.');
+      }
+    }
+
+    return {
+      redemption: current,
+      expired: Boolean(current && current.expiresAt <= new Date()),
+    };
+  }
+
+  private async releaseExpiredRedemption(
+    tx: Prisma.TransactionClient,
+    redemption: NonNullable<
+      Awaited<ReturnType<LoyaltyService['findReservedRedemptionForPurchase']>>
+    >,
+  ) {
+    const released = await this.loyalty.releaseExpiredRedemptionInTransaction(
+      tx,
+      redemption.id,
+      new Date(),
+    );
+    if (!released) {
+      throw new ConflictException('La reserva vencida cambió durante el pago.');
+    }
   }
 
   // H18: registrar pago y generar comprobante.
@@ -200,63 +314,107 @@ export class PaymentsService {
 
     // Procesamiento transaccional.
     const result = await this.db.$transaction(async (tx) => {
-      const target = await this.getPaymentTarget(
+      const preflightTarget = await this.getPaymentTarget(
         tx,
         input,
         branchId,
         user,
+        false,
+      );
+      const purchase = preflightTarget.type === 'ACCOUNT'
+        ? { accountId: preflightTarget.account.id }
+        : { orderId: preflightTarget.order.id };
+      const customerId = preflightTarget.type === 'ACCOUNT'
+        ? preflightTarget.account.customerId
+        : preflightTarget.order.customerId;
+      const reservation = await this.prepareRedemptionForPayment(
+        tx,
+        purchase,
+        customerId,
       );
 
-      // Obtener productos de la cuenta o pedido.
-      const items =
+      // Read the purchase again while its row lock is held. Expired canjes
+      // are released even when the purchase is no longer payable.
+      let target = await this.getPaymentTarget(
+        tx,
+        input,
+        branchId,
+        user,
+        false,
+      );
+      if (!reservation.expired) {
+        target = await this.getPaymentTarget(tx, input, branchId, user);
+      }
+
+      const pricedItems =
         target.type === 'ACCOUNT'
           ? target.account.orders.flatMap((order) =>
               order.items.map((item) => ({
                 productName: item.dish.name,
                 quantity: item.quantity,
-                unitPrice: item.unitPrice.toNumber(),
-                subtotal: item.subtotal.toNumber(),
+                unitPrice: item.unitPrice,
+                subtotal: item.subtotal,
               })),
             )
           : target.order.items.map((item) => ({
               productName: item.dish.name,
               quantity: item.quantity,
-              unitPrice: item.unitPrice.toNumber(),
-              subtotal: item.subtotal.toNumber(),
+              unitPrice: item.unitPrice,
+              subtotal: item.subtotal,
             }));
 
-      if (items.length === 0) {
+      if (pricedItems.length === 0) {
         throw new ConflictException(
           'No existen productos para cobrar',
         );
       }
 
-      // Calcular importes desde la base de datos.
-      const subtotal = items.reduce(
+      const subtotal = pricedItems.reduce(
         (sum, item) => sum.plus(item.subtotal),
         new Prisma.Decimal(0),
       );
 
-      const amounts = this.calculateAmounts(subtotal);
+      const discount = reservation.redemption?.discountAmount ?? new Prisma.Decimal(0);
+      const amounts = this.calculateAmounts(subtotal, discount);
 
-      let paymentStatus:  PaymentStatus = PaymentStatus.APPROVED;
+      if (
+        reservation.redemption &&
+        (reservation.expired || reservation.redemption.expiresAt <= new Date())
+      ) {
+        await this.releaseExpiredRedemption(tx, reservation.redemption);
+        return { expired: true as const };
+      }
+
+      // Keep the existing insufficient-cash behavior: no payment is attempted,
+      // but an already-expired reservation has been released above.
       let amountReceived: Prisma.Decimal | null = null;
       let change = new Prisma.Decimal(0);
-
-      // Validar efectivo.
       if (input.method === PaymentMethod.CASH) {
-        amountReceived = new Prisma.Decimal(
-          input.amountReceived!,
-        );
-
+        amountReceived = new Prisma.Decimal(input.amountReceived!);
         if (amountReceived.lt(amounts.total)) {
           throw new BadRequestException(
             'El efectivo recibido es insuficiente',
           );
         }
-
         change = amountReceived.minus(amounts.total);
       }
+
+      if (
+        reservation.redemption &&
+        (reservation.expired || reservation.redemption.expiresAt <= new Date())
+      ) {
+        await this.releaseExpiredRedemption(tx, reservation.redemption);
+        return { expired: true as const };
+      }
+
+      const items = pricedItems.map((item) => ({
+        productName: item.productName,
+        quantity: item.quantity,
+        unitPrice: item.unitPrice.toNumber(),
+        subtotal: item.subtotal.toNumber(),
+      }));
+
+      let paymentStatus: PaymentStatus = PaymentStatus.APPROVED;
 
       // Simulación de tarjeta.
       if (
@@ -264,6 +422,14 @@ export class PaymentsService {
         input.cardLast4 === '0002'
       ) {
         paymentStatus = PaymentStatus.REJECTED;
+      }
+
+      if (
+        reservation.redemption &&
+        reservation.redemption.expiresAt <= new Date()
+      ) {
+        await this.releaseExpiredRedemption(tx, reservation.redemption);
+        return { expired: true as const };
       }
 
       // Registrar intento de pago.
@@ -293,10 +459,28 @@ export class PaymentsService {
 
       // Si el pago es rechazado, no cerrar ni generar comprobante.
       if (paymentStatus === PaymentStatus.REJECTED) {
+        if (reservation.redemption) {
+          await this.loyalty.releaseRedemptionForPayment(tx, {
+            redemptionId: reservation.redemption.id,
+            loyaltyAccountId: reservation.redemption.loyaltyAccountId,
+            points: reservation.redemption.pointsReserved,
+            reason: LoyaltyRedemptionReleaseReason.PAYMENT_REJECTED,
+            paymentId: payment.id,
+          });
+        }
         return {
           rejected: true as const,
           paymentId: payment.id,
         };
+      }
+
+      if (reservation.redemption) {
+        await this.loyalty.completeRedemptionForPayment(tx, {
+          redemptionId: reservation.redemption.id,
+          loyaltyAccountId: reservation.redemption.loyaltyAccountId,
+          points: reservation.redemption.pointsReserved,
+          paymentId: payment.id,
+        });
       }
 
       // Incrementar correlativo de comprobantes por sucursal.
@@ -356,10 +540,9 @@ export class PaymentsService {
       return {
         rejected: false as const,
         paymentId: payment.id,
-        customerId:
-  target.type === 'ACCOUNT'
-    ? target.account.customerId
-    : target.order.customerId,
+        customerId: target.type === 'ACCOUNT'
+          ? target.account.customerId
+          : target.order.customerId,
         receipt: {
           id: receipt.id,
           number: receipt.receiptNumber,
@@ -389,6 +572,10 @@ export class PaymentsService {
             : null,
       };
     });
+
+    if ('expired' in result && result.expired) {
+      throw new ConflictException('La reserva del canje venció; solicita un nuevo canje.');
+    }
 
     // Respuesta de pago rechazado.
     if (result.rejected) {
@@ -436,6 +623,32 @@ export class PaymentsService {
 
     try {
       const result = await this.db.$transaction(async (tx) => {
+        const initialOrder = await tx.order.findUnique({
+          where: { id: orderId },
+          select: { id: true, customerId: true, accountId: true },
+        });
+
+        if (!initialOrder) {
+          throw new NotFoundException('Pedido inexistente');
+        }
+
+        if (initialOrder.customerId !== user.id || initialOrder.accountId !== null) {
+          throw new ForbiddenException(
+            'No tiene permiso para consultar este pedido',
+          );
+        }
+
+        const reservation = await this.prepareRedemptionForPayment(
+          tx,
+          { orderId },
+          initialOrder.customerId,
+        );
+
+        if (reservation.expired && reservation.redemption) {
+          await this.releaseExpiredRedemption(tx, reservation.redemption);
+          return { expired: true as const };
+        }
+
         const order = await tx.order.findUnique({
           where: { id: orderId },
           include: {
@@ -454,9 +667,7 @@ export class PaymentsService {
         }
 
         if (order.customerId !== user.id || order.accountId !== null) {
-          throw new ForbiddenException(
-            'No tiene permiso para consultar este pedido',
-          );
+          throw new ConflictException('El pedido cambió durante el pago.');
         }
 
         if (order.status !== 'PENDING_PAYMENT') {
@@ -471,24 +682,42 @@ export class PaymentsService {
           );
         }
 
-        const items = order.items.map((item) => ({
+        const pricedItems = order.items.map((item) => ({
           productName: item.dish.name,
+          quantity: item.quantity,
+          unitPrice: item.unitPrice,
+          subtotal: item.subtotal,
+        }));
+
+        const subtotal = pricedItems.reduce(
+          (sum, item) => sum.plus(item.subtotal),
+          new Prisma.Decimal(0),
+        );
+
+        const amounts = this.calculateAmounts(
+          subtotal,
+          reservation.redemption?.discountAmount ?? new Prisma.Decimal(0),
+        );
+
+        const items = pricedItems.map((item) => ({
+          productName: item.productName,
           quantity: item.quantity,
           unitPrice: item.unitPrice.toNumber(),
           subtotal: item.subtotal.toNumber(),
         }));
 
-        const subtotal = items.reduce(
-          (sum, item) => sum.plus(item.subtotal),
-          new Prisma.Decimal(0),
-        );
-
-        const amounts = this.calculateAmounts(subtotal);
-
         const paymentStatus =
           input.cardLast4 === '0002'
             ? PaymentStatus.REJECTED
             : PaymentStatus.APPROVED;
+
+        if (
+          reservation.redemption &&
+          reservation.redemption.expiresAt <= new Date()
+        ) {
+          await this.releaseExpiredRedemption(tx, reservation.redemption);
+          return { expired: true as const };
+        }
 
         const payment = await tx.payment.create({
           data: {
@@ -503,10 +732,28 @@ export class PaymentsService {
         });
 
         if (paymentStatus === PaymentStatus.REJECTED) {
+          if (reservation.redemption) {
+            await this.loyalty.releaseRedemptionForPayment(tx, {
+              redemptionId: reservation.redemption.id,
+              loyaltyAccountId: reservation.redemption.loyaltyAccountId,
+              points: reservation.redemption.pointsReserved,
+              reason: LoyaltyRedemptionReleaseReason.PAYMENT_REJECTED,
+              paymentId: payment.id,
+            });
+          }
           return {
             rejected: true as const,
             paymentId: payment.id,
           };
+        }
+
+        if (reservation.redemption) {
+          await this.loyalty.completeRedemptionForPayment(tx, {
+            redemptionId: reservation.redemption.id,
+            loyaltyAccountId: reservation.redemption.loyaltyAccountId,
+            points: reservation.redemption.pointsReserved,
+            paymentId: payment.id,
+          });
         }
 
         const branchUpdate = await tx.branch.update({
@@ -580,6 +827,10 @@ export class PaymentsService {
           },
         };
       });
+
+      if ('expired' in result && result.expired) {
+        throw new ConflictException('La reserva del canje venció; solicita un nuevo canje.');
+      }
 
       if (result.rejected) {
         return {

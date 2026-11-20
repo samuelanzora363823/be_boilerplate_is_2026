@@ -27,6 +27,7 @@ enum UserRole {
   MESERO
   COCINA
   CLIENTE
+  GERENTE_GENERAL
 }
 
 // ==========================================
@@ -52,8 +53,9 @@ model User {
   inventoryMovements InventoryMovement[]
   notifications      Notification[]
   reservations       Reservation[]
+  loyaltyRuleChanges     LoyaltyRuleHistory[]
+  loyaltyBenefitsCreated LoyaltyBenefit[] @relation("LoyaltyBenefitCreator")
   reviews            Review[]
-
 
   // H20 - Cuenta de puntos del cliente
   loyaltyAccount LoyaltyAccount?
@@ -285,6 +287,7 @@ model Account {
   orders     Order[]
   payments Payment[]
   receipt  Receipt?
+  loyaltyRedemptions LoyaltyRedemption[]
   review   Review?
 
   @@index([tableId, status])
@@ -308,6 +311,7 @@ model Order {
   review Review?
   payments    Payment[]
   receipt     Receipt?
+  loyaltyRedemptions LoyaltyRedemption[]
 
   @@index([branchId, status, createdAt])
   @@map("orders")
@@ -387,6 +391,7 @@ model Payment {
   user           User          @relation("PaymentProcessedBy", fields: [userId], references: [id])
 
   receipt        Receipt?
+  loyaltyRedemption LoyaltyRedemption?
 
   @@index([accountId, status])
   @@index([orderId, status])
@@ -520,12 +525,17 @@ enum LoyaltyMovementType {
 model LoyaltyAccount {
   id String @id @default(uuid()) @db.Uuid
   userId String @unique @map("user_id") @db.Uuid
+  // Total points owned by the customer, including reserved points.
   balance Int @default(0)
+  // Reserved points are included in balance; available = balance - reservedPoints.
+  reservedPoints Int @default(0) @map("reserved_points")
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
   movements LoyaltyMovement[]
+  redemptions LoyaltyRedemption[]
+  redemptionMovements LoyaltyRedemptionMovement[]
 
   @@map("loyalty_accounts")
 }
@@ -546,6 +556,129 @@ model LoyaltyMovement {
 }
 
 // ==========================================
+// H22 - CONFIGURACIÓN DEL PROGRAMA DE LEALTAD
+// ==========================================
+
+enum LoyaltyDiscountType {
+  PERCENTAGE
+  FIXED
+}
+
+model LoyaltyRule {
+  id              String   @id @default(uuid()) @db.Uuid
+  pointsPerDollar Decimal  @default(1) @map("points_per_dollar") @db.Decimal(10, 2)
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  history LoyaltyRuleHistory[]
+
+  @@map("loyalty_rules")
+}
+
+model LoyaltyRuleHistory {
+  id                String   @id @default(uuid()) @db.Uuid
+  loyaltyRuleId     String   @map("loyalty_rule_id") @db.Uuid
+  previousPoints    Decimal  @map("previous_points") @db.Decimal(10, 2)
+  newPoints         Decimal  @map("new_points") @db.Decimal(10, 2)
+  changedById       String   @map("changed_by_id") @db.Uuid
+  changedAt         DateTime @default(now()) @map("changed_at")
+
+  loyaltyRule LoyaltyRule @relation(fields: [loyaltyRuleId], references: [id])
+  changedBy   User        @relation(fields: [changedById], references: [id])
+
+  @@index([loyaltyRuleId, changedAt])
+  @@map("loyalty_rule_history")
+}
+
+model LoyaltyBenefit {
+  id             String              @id @default(uuid()) @db.Uuid
+  name           String              @unique @db.VarChar(100)
+  pointsRequired Int                 @map("points_required")
+  discountType   LoyaltyDiscountType @map("discount_type")
+  discountValue  Decimal             @map("discount_value") @db.Decimal(10, 2)
+  active         Boolean             @default(true)
+  createdById    String              @map("created_by_id") @db.Uuid
+  createdAt      DateTime            @default(now()) @map("created_at")
+  updatedAt      DateTime            @updatedAt @map("updated_at")
+
+  createdBy   User                @relation("LoyaltyBenefitCreator", fields: [createdById], references: [id])
+  redemptions LoyaltyRedemption[]
+
+  @@index([active, pointsRequired])
+  @@map("loyalty_benefits")
+}
+
+// ==========================================
+// H21 - CANJES DE PUNTOS
+// ==========================================
+
+enum LoyaltyRedemptionStatus {
+  RESERVED
+  COMPLETED
+  RELEASED
+}
+
+enum LoyaltyRedemptionReleaseReason {
+  PAYMENT_REJECTED
+  CANCELLED
+  EXPIRED
+}
+
+enum LoyaltyRedemptionMovementType {
+  RESERVED
+  SPENT
+  RELEASED
+}
+
+model LoyaltyRedemption {
+  id               String                        @id @default(uuid()) @db.Uuid
+  loyaltyAccountId String                        @map("loyalty_account_id") @db.Uuid
+  benefitId        String                        @map("benefit_id") @db.Uuid
+  accountId        String?                       @map("account_id") @db.Uuid
+  orderId          String?                       @map("order_id") @db.Uuid
+  paymentId        String?                       @unique @map("payment_id") @db.Uuid
+  pointsReserved   Int                           @map("points_reserved")
+  subtotalAmount   Decimal                       @map("subtotal_amount") @db.Decimal(10, 2)
+  discountAmount   Decimal                       @map("discount_amount") @db.Decimal(10, 2)
+  status           LoyaltyRedemptionStatus       @default(RESERVED)
+  releaseReason    LoyaltyRedemptionReleaseReason? @map("release_reason")
+  expiresAt        DateTime                      @default(dbgenerated("CURRENT_TIMESTAMP + INTERVAL '15 minutes'")) @map("expires_at")
+  createdAt        DateTime                      @default(now()) @map("created_at")
+  updatedAt        DateTime                      @updatedAt @map("updated_at")
+  completedAt      DateTime?                     @map("completed_at")
+  releasedAt       DateTime?                     @map("released_at")
+
+  loyaltyAccount LoyaltyAccount @relation(fields: [loyaltyAccountId], references: [id], onDelete: Restrict)
+  benefit        LoyaltyBenefit @relation(fields: [benefitId], references: [id], onDelete: Restrict)
+  account        Account?        @relation(fields: [accountId], references: [id], onDelete: Restrict)
+  order          Order?          @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  payment        Payment?        @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+  movements      LoyaltyRedemptionMovement[]
+
+  @@index([loyaltyAccountId, status, expiresAt])
+  @@index([benefitId, status])
+  @@index([accountId, status])
+  @@index([orderId, status])
+  @@map("loyalty_redemptions")
+}
+
+model LoyaltyRedemptionMovement {
+  id               String                         @id @default(uuid()) @db.Uuid
+  redemptionId     String                         @map("redemption_id") @db.Uuid
+  loyaltyAccountId String                         @map("loyalty_account_id") @db.Uuid
+  type             LoyaltyRedemptionMovementType
+  points           Int
+  idempotencyKey   String                         @unique @map("idempotency_key") @db.VarChar(100)
+  createdAt        DateTime                       @default(now()) @map("created_at")
+
+  redemption     LoyaltyRedemption @relation(fields: [redemptionId], references: [id], onDelete: Restrict)
+  loyaltyAccount LoyaltyAccount    @relation(fields: [loyaltyAccountId], references: [id], onDelete: Restrict)
+
+  @@unique([redemptionId, type])
+  @@index([loyaltyAccountId, createdAt])
+  @@map("loyalty_redemption_movements")
+}
+
 // RESEÑAS (Módulo 8, H23) — modelo creado para H30 con los campos
 // definidos en el documento de historias. Una reseña por compra:
 // la cuenta de mesa o el pedido para llevar.

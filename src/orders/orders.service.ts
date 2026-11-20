@@ -16,12 +16,14 @@ import {
 } from './dto.js';
 import type { User } from '../generated/prisma/client.js';
 import { Prisma } from '../generated/prisma/client.js';
+import { LoyaltyService } from '../loyalty/loyalty.service.js';
 
 @Injectable()
 export class OrdersService implements OnModuleInit {
   constructor(
     private readonly db: PrismaService,
     private readonly kitchen: KitchenGateway,
+    private readonly loyalty: LoyaltyService,
   ) {}
 
   async onModuleInit() {
@@ -41,6 +43,85 @@ export class OrdersService implements OnModuleInit {
     }
 
     return assignments[0].branchId;
+  }
+
+  /**
+   * Serializes table-order changes with H21 reservations. Lock order is
+   * LoyaltyAccount -> Account -> Order -> Redemption.
+   */
+  private async lockTableOrderForMutation(
+    tx: Prisma.TransactionClient,
+    orderId: string,
+  ) {
+    const initial = await tx.order.findUnique({
+      where: { id: orderId },
+      select: { id: true, accountId: true },
+    });
+    if (!initial) throw new NotFoundException('Pedido inexistente');
+    let preflightCustomerId: string | null | undefined;
+
+    if (initial.accountId) {
+      const owner = await tx.account.findUnique({
+        where: { id: initial.accountId },
+        select: { customerId: true },
+      });
+      preflightCustomerId = owner?.customerId;
+      if (owner?.customerId) {
+        await this.loyalty.lockLoyaltyAccountForPayment(tx, {
+          userId: owner.customerId,
+        });
+      }
+      await tx.$queryRaw`
+        SELECT "id" FROM "accounts"
+        WHERE "id" = ${initial.accountId}::uuid
+        FOR UPDATE
+      `;
+    }
+
+    await tx.$queryRaw`
+      SELECT "id" FROM "orders" WHERE "id" = ${orderId}::uuid FOR UPDATE
+    `;
+
+    const order = await tx.order.findUnique({
+      where: { id: orderId },
+      include: { items: true, account: { include: { table: true } } },
+    });
+    if (!order) throw new NotFoundException('Pedido inexistente');
+    if (order.accountId !== initial.accountId) {
+      throw new ConflictException('La cuenta del pedido cambió durante la operación');
+    }
+    if (initial.accountId && order.account?.customerId !== preflightCustomerId) {
+      throw new ConflictException('El cliente de la cuenta cambió durante la operación');
+    }
+
+    return order;
+  }
+
+  private async assertNoReservedRedemption(
+    tx: Prisma.TransactionClient,
+    accountId: string,
+  ) {
+    const reservedRedemption = await tx.loyaltyRedemption.findFirst({
+      where: { accountId, status: 'RESERVED' },
+      select: { id: true, expiresAt: true },
+    });
+    if (reservedRedemption) {
+      if (reservedRedemption.expiresAt <= new Date()) {
+        await this.loyalty.releaseExpiredRedemptionInTransaction(
+          tx,
+          reservedRedemption.id,
+          new Date(),
+        );
+        const stillReserved = await tx.loyaltyRedemption.findFirst({
+          where: { accountId, status: 'RESERVED' },
+          select: { id: true },
+        });
+        if (!stillReserved) return;
+      }
+      throw new ConflictException(
+        'No se puede modificar una compra con un canje de puntos reservado',
+      );
+    }
   }
 
   async tables(user: User) {
@@ -188,6 +269,21 @@ export class OrdersService implements OnModuleInit {
     }
 
     const result = await this.db.$transaction(async (tx) => {
+      const preflightAccount = await tx.account.findUnique({
+        where: { id: input.accountId },
+        select: { customerId: true },
+      });
+      if (preflightAccount?.customerId) {
+        await this.loyalty.lockLoyaltyAccountForPayment(tx, {
+          userId: preflightAccount.customerId,
+        });
+      }
+      // Match H21's account lock so a new order cannot change a reserved subtotal.
+      await tx.$queryRaw`
+        SELECT "id" FROM "accounts"
+        WHERE "id" = ${input.accountId}::uuid
+        FOR UPDATE
+      `;
       const account = await tx.account.findUnique({
         where: { id: input.accountId },
         include: { table: true },
@@ -195,6 +291,9 @@ export class OrdersService implements OnModuleInit {
 
       if (!account) {
         throw new NotFoundException('Cuenta inexistente');
+      }
+      if (account.customerId !== preflightAccount?.customerId) {
+        throw new ConflictException('El cliente de la cuenta cambió durante la operación');
       }
 
       if (account.branchId !== branchId || account.waiterId !== user.id) {
@@ -206,6 +305,8 @@ export class OrdersService implements OnModuleInit {
       if (account.status !== 'OPEN' || account.table.status !== 'OCCUPIED') {
         throw new ConflictException('Cuenta no abierta');
       }
+
+      await this.assertNoReservedRedemption(tx, account.id);
 
       const dishes = await tx.dish.findMany({
         where: {
@@ -340,13 +441,7 @@ export class OrdersService implements OnModuleInit {
     if (new Set(ids).size !== ids.length)
       throw new BadRequestException('No repitas ítems');
     const result = await this.db.$transaction(async (tx) => {
-      // Bloquea la orden hasta completar el cambio: cocina no debe poder cambiar su estado a mitad de la operación.
-      await tx.$queryRaw`SELECT id FROM orders WHERE id = ${orderId}::uuid FOR UPDATE`;
-      const order = await tx.order.findUnique({
-        where: { id: orderId },
-        include: { items: true, account: { include: { table: true } } },
-      });
-      if (!order) throw new NotFoundException('Pedido inexistente');
+      const order = await this.lockTableOrderForMutation(tx, orderId);
       if (
         !order.account ||
         order.branchId !== branchId ||
@@ -360,6 +455,7 @@ export class OrdersService implements OnModuleInit {
         throw new ConflictException('El pedido ya no está Recibido');
       if (order.account.status !== 'OPEN')
         throw new ConflictException('La cuenta ya no está abierta');
+      await this.assertNoReservedRedemption(tx, order.account.id);
       if (
         ids.length !== order.items.length ||
         order.items.some((item) => !ids.includes(item.id))
@@ -411,12 +507,7 @@ export class OrdersService implements OnModuleInit {
   async cancel(user: User, orderId: string) {
     const branchId = await this.branch(user);
     const result = await this.db.$transaction(async (tx) => {
-      await tx.$queryRaw`SELECT id FROM orders WHERE id = ${orderId}::uuid FOR UPDATE`;
-      const order = await tx.order.findUnique({
-        where: { id: orderId },
-        include: { items: true, account: { include: { table: true } } },
-      });
-      if (!order) throw new NotFoundException('Pedido inexistente');
+      const order = await this.lockTableOrderForMutation(tx, orderId);
       if (
         !order.account ||
         order.branchId !== branchId ||
@@ -430,6 +521,7 @@ export class OrdersService implements OnModuleInit {
         throw new ConflictException('El pedido ya no está Recibido');
       if (order.account.status !== 'OPEN')
         throw new ConflictException('La cuenta ya no está abierta');
+      await this.assertNoReservedRedemption(tx, order.account.id);
       await tx.order.update({
         where: { id: orderId },
         data: { status: 'CANCELLED' },
