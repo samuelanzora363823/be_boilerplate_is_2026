@@ -86,4 +86,52 @@ export class ReviewsRepository {
       },
     });
   }
+
+  findBranch(branchId: string) {
+    return this.prisma.branch.findUnique({
+      where: { id: branchId },
+      select: { id: true },
+    });
+  }
+
+  findBranchAssignment(userId: string, branchId: string) {
+    return this.prisma.staffBranch.findUnique({
+      where: {
+        userId_branchId: { userId, branchId },
+      },
+      select: { userId: true, branchId: true },
+    });
+  }
+
+  getBranchReviewPage(branchId: string, page: number, limit: number) {
+    return this.prisma.$transaction(
+      async (tx) => {
+        const where = { branchId };
+        const aggregate = await tx.review.aggregate({
+          where,
+          _sum: { rating: true },
+          _count: { _all: true },
+        });
+        const reviews = await tx.review.findMany({
+          where,
+          select: {
+            id: true,
+            rating: true,
+            comment: true,
+            createdAt: true,
+          },
+          orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+          skip: (page - 1) * limit,
+          take: limit,
+        });
+
+        return {
+          ratingSum: aggregate._sum.rating,
+          totalReviews: aggregate._count._all,
+          reviews,
+        };
+      },
+      { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead },
+    );
+  }
 }
