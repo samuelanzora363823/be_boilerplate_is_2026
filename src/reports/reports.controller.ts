@@ -7,7 +7,7 @@ import { ReportsService } from './reports.service.js';
 
 // Épica 10: solo el Gerente general consulta los reportes.
 @Controller()
-@Roles(UserRole.GERENTE_GENERAL)
+@Roles(UserRole.GERENTE)
 @UseFilters(ReportsErrorFilter)
 export class ReportsController {
   constructor(private readonly reports: ReportsService) {}
