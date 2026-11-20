@@ -16,7 +16,7 @@ export class TakeawayService {
   constructor(private readonly db: PrismaService) {}
 
   async mine(user: User) {
-    return this.db.order.findMany({
+    const orders = await this.db.order.findMany({
       where: {
         customerId: user.id,
         accountId: null,
@@ -30,8 +30,14 @@ export class TakeawayService {
         status: true,
         total: true,
         createdAt: true,
+        review: { select: { id: true } },
       },
     });
+
+    return orders.map(({ review, ...order }) => ({
+      ...order,
+      hasReview: Boolean(review),
+    }));
   }
 
   // H19: consultar el detalle de un pedido propio antes de pagar.
