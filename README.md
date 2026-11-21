@@ -1,3 +1,40 @@
+# Núcleo Digital
+
+Sistema web para la gestión de operaciones de restaurantes.
+
+## Versión de entrega
+
+v1.0.0
+
+## Tecnologías
+
+- Frontend: Next.js 16 y React 19.
+- Backend: NestJS 12 y Prisma 7.
+- Base de datos: PostgreSQL 18.
+- Infraestructura: Docker, Nginx y AWS EC2.
+
+## Enlaces
+
+- [Aplicación web](https://18.218.151.130.sslip.io/login)
+- [Documentación Swagger](https://18.218.151.130.sslip.io/api/docs)
+- [Repositorio frontend](https://github.com/samuelanzora363823/fe_boilerplate_is_2026)
+
+## Documentación del proyecto
+
+1. [Guía de uso](docs/01-guia-de-uso.md)
+2. [Arquitectura](docs/02-arquitectura.md)
+3. [Modelo de datos](docs/03-modelo-de-datos.md)
+4. [API REST](docs/04-api.md)
+5. [Instalación local](docs/05-instalacion-local.md)
+6. [Despliegue](docs/06-despliegue.md)
+7. [Forma de trabajo](docs/07-forma-de-trabajo.md)
+8. [Historias de usuario](docs/08-historias.md)
+9. [Problemas conocidos](docs/09-problemas-conocidos.md)
+
+---
+
+## Documentación técnica del backend
+
 # SI Backend Boilerplate
 
 API REST construida con **NestJS 12**, **Prisma 7** y **PostgreSQL 18**, con autenticación por usuario y contraseña lista para usar.
