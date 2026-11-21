@@ -23,7 +23,7 @@ La versión de referencia del proyecto es v1.0.0.
 - Frontend: https://github.com/samuelanzora363823/fe_boilerplate_is_2026
 
 ## Tablero del proyecto
-Pendiente: agregar el enlace real del tablero utilizado por el equipo.
+Tablero del proyecto: https://github.com/users/samuelanzora363823/projects/1
 
 ## Evidencias
 Los Pull Requests y el estado de cada historia se documentan en 08-historias.md.
