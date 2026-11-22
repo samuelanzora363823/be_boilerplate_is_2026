@@ -227,6 +227,48 @@ export class InventoryService {
 
   async listAlerts(user: User) {
     const branchId = await this.branch(user);
+
+    // H16: reconciliar las alertas con las existencias reales. Los insumos
+    // importados o creados con stock bajo pueden no tener un movimiento previo.
+    // El índice parcial único (branch_id, supply_id) WHERE cycle_open = true
+    // evita duplicados incluso ante dos consultas simultáneas.
+    await this.db.$transaction(async (tx) => {
+      const inventories = await tx.branchInventory.findMany({
+        where: { branchId },
+        select: { supplyId: true, quantity: true, minimumStock: true },
+      });
+      const openAlerts = await tx.inventoryAlert.findMany({
+        where: { branchId, cycleOpen: true },
+        select: { supplyId: true },
+      });
+      const openSupplyIds = new Set(openAlerts.map((alert) => alert.supplyId));
+      const lowStock = inventories.filter((row) => row.quantity.lte(row.minimumStock));
+      const lowStockIds = new Set(lowStock.map((row) => row.supplyId));
+
+      // Una alerta atendida permanece en su ciclo hasta reponer por encima
+      // del mínimo. Al recuperarse, se permite un nuevo ciclo futuro.
+      for (const alert of openAlerts) {
+        if (!lowStockIds.has(alert.supplyId)) {
+          await tx.inventoryAlert.updateMany({
+            where: { branchId, supplyId: alert.supplyId, cycleOpen: true },
+            data: { cycleOpen: false },
+          });
+        }
+      }
+
+      const missing = lowStock.filter((row) => !openSupplyIds.has(row.supplyId));
+      if (missing.length) {
+        await tx.inventoryAlert.createMany({
+          data: missing.map((row) => ({
+            branchId,
+            supplyId: row.supplyId,
+            quantityAtAlert: row.quantity,
+          })),
+          skipDuplicates: true,
+        });
+      }
+    });
+
     const rows = await this.db.inventoryAlert.findMany({
       where: { branchId }, include: { supply: true },
       orderBy: { createdAt: 'desc' }, take: 200,
