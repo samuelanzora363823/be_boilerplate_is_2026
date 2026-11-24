@@ -6,6 +6,7 @@ import {
   HttpStatus,
   Param,
   ParseUUIDPipe,
+  Query,
   Post,
 } from '@nestjs/common';
 
@@ -31,6 +32,16 @@ export class PaymentsController {
     @Body() dto: CreatePaymentDto,
   ) {
     return this.payments.registerPayment(user, dto);
+  }
+
+  // H18: consultar historial paginado de comprobantes.
+  @Get('receipts')
+  listReceipts(
+    @CurrentUser() user: User,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.payments.listReceipts(user, page, limit);
   }
 
   // H18: consultar comprobante.

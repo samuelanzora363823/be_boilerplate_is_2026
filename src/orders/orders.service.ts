@@ -124,6 +124,31 @@ export class OrdersService implements OnModuleInit {
     }
   }
 
+  async myBranch(user: User) {
+    const branchId = await this.branch(user);
+    const branch = await this.db.branch.findUnique({
+      where: { id: branchId },
+      select: {
+        id: true,
+        name: true,
+        isActive: true,
+        openingTime: true,
+        closingTime: true,
+      },
+    });
+
+    if (!branch || !branch.isActive) {
+      throw new NotFoundException('La sucursal asignada no está disponible');
+    }
+
+    return {
+      id: branch.id,
+      name: branch.name,
+      openingTime: branch.openingTime,
+      closingTime: branch.closingTime,
+    };
+  }
+
   async tables(user: User) {
     const branchId = await this.branch(user);
 
@@ -172,14 +197,6 @@ export class OrdersService implements OnModuleInit {
   async open(user: User, input: OpenAccountDto) {
     const branchId = await this.branch(user);
 
-    const table = await this.db.restaurantTable.findUnique({
-      where: { id: input.tableId },
-    });
-
-    if (!table || table.branchId !== branchId) {
-      throw new NotFoundException('Mesa no existe en tu sucursal');
-    }
-
     let customerId: string | undefined;
 
     if (input.customerEmail) {
@@ -196,10 +213,21 @@ export class OrdersService implements OnModuleInit {
       customerId = customer.id;
     }
 
-    // El índice parcial único impide dos cuentas abiertas
-    // simultáneamente para la misma mesa.
+    // Se serializa con H10: crear una reserva también bloquea la sucursal.
     try {
       return await this.db.$transaction(async (tx) => {
+        await tx.$queryRaw`
+          SELECT id FROM branches WHERE id = ${branchId}::uuid FOR UPDATE
+        `;
+
+        const table = await tx.restaurantTable.findUnique({
+          where: { id: input.tableId },
+        });
+
+        if (!table || table.branchId !== branchId) {
+          throw new NotFoundException('Mesa no existe en tu sucursal');
+        }
+
         const current = await tx.account.findFirst({
           where: {
             tableId: table.id,
@@ -223,6 +251,34 @@ export class OrdersService implements OnModuleInit {
 
         if (table.status !== 'FREE') {
           throw new ConflictException('Mesa no disponible');
+        }
+
+        // La apertura de cuenta representa la ocupación en este momento.
+        // Se rechaza si una reserva confirmada incluye el instante actual.
+        const now = new Date();
+        const activeReservation = await tx.reservation.findFirst({
+          where: {
+            tableId: table.id,
+            status: 'CONFIRMED',
+            dateTime: { lte: now },
+          },
+          select: {
+            dateTime: true,
+            durationMinutes: true,
+          },
+          orderBy: { dateTime: 'desc' },
+        });
+
+        if (activeReservation) {
+          const reservationEnd = new Date(
+            activeReservation.dateTime.getTime() +
+              activeReservation.durationMinutes * 60_000,
+          );
+          if (reservationEnd > now) {
+            throw new ConflictException(
+              'La mesa tiene una reserva confirmada para este horario',
+            );
+          }
         }
 
         const account = await tx.account.create({
@@ -559,6 +615,12 @@ export class OrdersService implements OnModuleInit {
             email: true,
           },
         },
+        receipt: {
+          select: {
+            id: true,
+            receiptNumber: true,
+          },
+        },
         orders: {
           where: {
             status: { not: 'CANCELLED' },
@@ -596,11 +658,25 @@ export class OrdersService implements OnModuleInit {
           ),
         ),
       new Prisma.Decimal(0),
-    );
+    ).toDecimalPlaces(2);
 
-    const discount = new Prisma.Decimal(0);
+    // Mantener el detalle sincronizado con el descuento reservado que aplicará
+    // PaymentsService al procesar el cobro de esta misma cuenta.
+    const redemption = await this.db.loyaltyRedemption.findFirst({
+      where: {
+        accountId: account.id,
+        status: 'RESERVED',
+        expiresAt: { gt: new Date() },
+      },
+      select: { discountAmount: true },
+    });
+    const discount = (redemption?.discountAmount ?? new Prisma.Decimal(0))
+      .toDecimalPlaces(2);
+    if (discount.lt(0) || discount.gt(subtotal)) {
+      throw new ConflictException('El descuento reservado no es compatible con el total de la cuenta.');
+    }
     const taxableAmount = subtotal.minus(discount);
-    const tax = taxableAmount.mul(0.13).toDecimalPlaces(2);
+    const tax = taxableAmount.mul(new Prisma.Decimal('0.13')).toDecimalPlaces(2);
     const total = taxableAmount.plus(tax).toDecimalPlaces(2);
 
     return {
@@ -610,6 +686,7 @@ export class OrdersService implements OnModuleInit {
       tableId: account.tableId,
       tableNumber: account.table.number,
       customer: account.customer,
+      receipt: account.receipt,
       orders: account.orders.map((order) => ({
         orderId: order.id,
         status: order.status,
@@ -677,6 +754,7 @@ export class OrdersService implements OnModuleInit {
           select: {
             id: true,
             status: true,
+            items: { select: { subtotal: true } },
           },
         },
       },
@@ -720,13 +798,39 @@ export class OrdersService implements OnModuleInit {
       );
     }
 
-    const total = new Prisma.Decimal(account.total)
-      .mul(1.13)
+    const subtotal = activeOrders.reduce(
+      (sum, order) => sum.plus(
+        order.items.reduce(
+          (itemSum, item) => itemSum.plus(item.subtotal),
+          new Prisma.Decimal(0),
+        ),
+      ),
+      new Prisma.Decimal(0),
+    ).toDecimalPlaces(2);
+
+    const redemption = await this.db.loyaltyRedemption.findFirst({
+      where: {
+        accountId: account.id,
+        status: 'RESERVED',
+        expiresAt: { gt: new Date() },
+      },
+      select: { discountAmount: true },
+    });
+    const discount = (redemption?.discountAmount ?? new Prisma.Decimal(0))
       .toDecimalPlaces(2);
+    if (discount.lt(0) || discount.gt(subtotal)) {
+      throw new ConflictException('El descuento reservado no es compatible con el total de la cuenta.');
+    }
+    const taxableAmount = subtotal.minus(discount);
+    const tax = taxableAmount.mul(new Prisma.Decimal('0.13')).toDecimalPlaces(2);
+    const total = taxableAmount.plus(tax).toDecimalPlaces(2);
 
     return {
       accountId: account.id,
       status: account.status,
+      subtotal,
+      discount,
+      tax,
       total,
       canPay: true,
     };

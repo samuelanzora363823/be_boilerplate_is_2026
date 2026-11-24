@@ -300,16 +300,33 @@ export class PaymentsService {
         );
       }
 
-      await this.delay(2000);
-    }
+      if (!['4242', '0002'].includes(input.cardLast4)) {
+        throw new BadRequestException(
+          'La tarjeta de prueba debe terminar en 4242 o 0002',
+        );
+      }
 
-    if (
-      input.method === PaymentMethod.CASH &&
-      input.amountReceived === undefined
-    ) {
-      throw new BadRequestException(
-        'Debes indicar el efectivo recibido',
-      );
+      if (input.amountReceived !== undefined) {
+        throw new BadRequestException(
+          'No debes enviar efectivo recibido para un pago con tarjeta',
+        );
+      }
+
+      await this.delay(2000);
+    } else if (input.method === PaymentMethod.CASH) {
+      if (input.amountReceived === undefined) {
+        throw new BadRequestException(
+          'Debes indicar el efectivo recibido',
+        );
+      }
+
+      if (input.cardLast4 !== undefined) {
+        throw new BadRequestException(
+          'No debes enviar datos de tarjeta para un pago en efectivo',
+        );
+      }
+    } else {
+      throw new BadRequestException('Método de pago no válido');
     }
 
     // Procesamiento transaccional.
@@ -874,6 +891,71 @@ export class PaymentsService {
   }
 
   // H18: consultar un comprobante generado.
+  // H18: historial paginado de comprobantes de la sucursal.
+  async listReceipts(user: User, pageInput?: string, limitInput?: string) {
+    if (user.role !== UserRole.MESERO) {
+      throw new ForbiddenException(
+        'Solo un mesero puede consultar comprobantes',
+      );
+    }
+
+    const branchId = await this.branch(user);
+    const page = pageInput === undefined ? 1 : Number(pageInput);
+    const limit = limitInput === undefined ? 10 : Number(limitInput);
+
+    if (
+      !Number.isInteger(page) || page < 1 ||
+      !Number.isInteger(limit) || limit < 1 || limit > 100
+    ) {
+      throw new BadRequestException(
+        'La página debe ser positiva y el límite debe estar entre 1 y 100',
+      );
+    }
+
+    const where = {
+      branchId,
+      payment: { status: PaymentStatus.APPROVED },
+      OR: [
+        { accountId: null },
+        { account: { is: { waiterId: user.id } } },
+      ],
+    };
+
+    const [rows, total] = await this.db.$transaction([
+      this.db.receipt.findMany({
+        where,
+        include: {
+          branch: { select: { name: true, code: true } },
+          payment: { select: { status: true, method: true } },
+          order: { select: { id: true, orderNumber: true } },
+        },
+        orderBy: { issuedAt: 'desc' },
+        skip: (page - 1) * limit,
+        take: limit,
+      }),
+      this.db.receipt.count({ where }),
+    ]);
+
+    return {
+      data: rows.map((receipt) => ({
+        receiptId: receipt.id,
+        receiptNumber: receipt.receiptNumber,
+        issuedAt: receipt.issuedAt,
+        branch: receipt.branch,
+        subtotal: receipt.subtotal,
+        discount: receipt.discount,
+        tax: receipt.tax,
+        total: receipt.total,
+        paymentMethod: receipt.paymentMethod,
+        paymentStatus: receipt.payment.status,
+        order: receipt.order,
+      })),
+      total,
+      page,
+      limit,
+    };
+  }
+
   async getReceipt(user: User, receiptId: string) {
     if (user.role !== UserRole.MESERO) {
       throw new ForbiddenException(

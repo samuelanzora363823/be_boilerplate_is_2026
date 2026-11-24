@@ -197,6 +197,18 @@ export class ReservationsService {
       where: {
         userId: user.id,
       },
+      include: {
+        branch: {
+          select: {
+            name: true,
+          },
+        },
+        table: {
+          select: {
+            number: true,
+          },
+        },
+      },
       orderBy: {
         dateTime: 'asc',
       },
@@ -206,7 +218,9 @@ export class ReservationsService {
       items: reservations.map((reservation) => ({
         id: reservation.id,
         branchId: reservation.branchId,
+        branchName: reservation.branch.name,
         tableId: reservation.tableId,
+        tableNumber: reservation.table.number,
         dateTime: reservation.dateTime,
         durationMinutes: reservation.durationMinutes,
         peopleCount: reservation.peopleCount,
