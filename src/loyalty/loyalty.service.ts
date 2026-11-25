@@ -16,6 +16,21 @@ import type { CreateRedemptionDto } from './dto/create-redemption.dto.js';
 // H22's configurable rule is not in this branch yet; retain its default rate.
 const DEFAULT_POINTS_PER_DOLLAR = 1;
 
+/**
+ * H20: saldo de puntos del cliente autenticado.
+ * - totalPoints: puntos propios, incluidos los reservados por canjes (H21).
+ * - reservedPoints: puntos apartados por canjes RESERVED aún no completados.
+ * - availablePoints: totalPoints - reservedPoints, nunca negativo.
+ * - balance: alias temporal de totalPoints, por compatibilidad con los
+ *   consumidores actuales de este endpoint.
+ */
+export interface LoyaltyBalance {
+  totalPoints: number;
+  reservedPoints: number;
+  availablePoints: number;
+  balance: number;
+}
+
 @Injectable()
 export class LoyaltyService {
   constructor(private readonly loyaltyRepository: LoyaltyRepository) {}
@@ -319,27 +334,30 @@ export class LoyaltyService {
     );
   }
 
-  async getBalance(userId: string) {
+  // H20: un cliente sin cuenta de puntos recibe saldo en cero. La consulta
+  // no crea la cuenta; esta solo se crea al acreditar el primer pago.
+  async getBalance(userId: string): Promise<LoyaltyBalance> {
     const account =
       await this.loyaltyRepository.findAccountByUserId(userId);
 
-    if (!account) {
-      throw new NotFoundException(
-        'El cliente no tiene una cuenta de puntos.',
-      );
-    }
+    const totalPoints = account?.balance ?? 0;
+    const reservedPoints = account?.reservedPoints ?? 0;
 
-    return { balance: account.balance };
+    return {
+      totalPoints,
+      reservedPoints,
+      availablePoints: Math.max(totalPoints - reservedPoints, 0),
+      balance: totalPoints,
+    };
   }
 
+  // H20: sin cuenta de puntos no hay movimientos; se responde una lista vacía.
   async getMovements(userId: string) {
     const account =
       await this.loyaltyRepository.findAccountByUserId(userId);
 
     if (!account) {
-      throw new NotFoundException(
-        'El cliente no tiene una cuenta de puntos.',
-      );
+      return [];
     }
 
     return this.loyaltyRepository.findMovements(account.id);
