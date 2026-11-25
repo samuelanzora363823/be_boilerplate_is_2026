@@ -1,4 +1,4 @@
-import { ConflictException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException } from '@nestjs/common';
 import {
   LoyaltyRedemptionReleaseReason,
   PaymentMethod,
@@ -101,6 +101,8 @@ function setup(options: {
       update: vi.fn().mockResolvedValue({ receiptCounter: 7, code: 'SV' }),
     },
     receipt: {
+      findMany: vi.fn().mockResolvedValue([]),
+      count: vi.fn().mockResolvedValue(0),
       create: vi.fn().mockResolvedValue({
         id: 'receipt-id',
         receiptNumber: 7,
@@ -118,8 +120,11 @@ function setup(options: {
     staffBranch: {
       findMany: vi.fn().mockResolvedValue([{ branchId: BRANCH_ID }]),
     },
-    $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) =>
-      callback(tx),
+    receipt: tx.receipt,
+    $transaction: vi.fn(async (operation: unknown) =>
+      Array.isArray(operation)
+        ? Promise.all(operation)
+        : (operation as (client: typeof tx) => unknown)(tx),
     ),
   };
   const loyalty = {
@@ -512,4 +517,111 @@ describe('PaymentsService H18/H19 with H21 canjes (unit mocks)', () => {
     expect(tx.order.update).not.toHaveBeenCalled();
     expect(loyalty.processApprovedPayment).not.toHaveBeenCalled();
   });
+
+  it('H18 lista comprobantes aprobados de la sucursal con paginación y permisos', async () => {
+    const { service, tx } = setup();
+
+    tx.receipt.findMany.mockResolvedValue([{
+      id: 'receipt-1',
+      receiptNumber: 7,
+      issuedAt: new Date(),
+      branch: { name: 'Escalón', code: 'SV' },
+      subtotal: new Prisma.Decimal('10.00'),
+      discount: new Prisma.Decimal(0),
+      tax: new Prisma.Decimal('1.30'),
+      total: new Prisma.Decimal('11.30'),
+      paymentMethod: PaymentMethod.CARD,
+      payment: { status: PaymentStatus.APPROVED, method: PaymentMethod.CARD },
+      order: null,
+    }]);
+    tx.receipt.count.mockResolvedValue(1);
+
+    const result = await service.listReceipts(mesero, '2', '5');
+
+    expect(result).toMatchObject({ total: 1, page: 2, limit: 5 });
+    expect(result.data).toHaveLength(1);
+    expect(tx.receipt.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: {
+        branchId: BRANCH_ID,
+        payment: { status: PaymentStatus.APPROVED },
+        OR: [
+          { accountId: null },
+          { account: { is: { waiterId: 'waiter-id' } } },
+        ],
+      },
+      orderBy: { issuedAt: 'desc' },
+      skip: 5,
+      take: 5,
+    }));
+  });
+
+  it('H18 impide consultar el historial a usuarios que no son meseros', async () => {
+    const { service, tx } = setup();
+
+    await expect(service.listReceipts(cliente)).rejects.toBeInstanceOf(ForbiddenException);
+    expect(tx.receipt.findMany).not.toHaveBeenCalled();
+  });
+
+  it('H18 valida los parámetros de paginación del historial', async () => {
+    const { service, tx } = setup();
+
+    await expect(service.listReceipts(mesero, '0', '10')).rejects.toBeInstanceOf(BadRequestException);
+    await expect(service.listReceipts(mesero, '1', '101')).rejects.toBeInstanceOf(BadRequestException);
+    expect(tx.receipt.findMany).not.toHaveBeenCalled();
+  });
+
+
+  it('H18 calcula y devuelve el cambio correcto en efectivo', async () => {
+    const { service, tx } = setup();
+
+    const result = await service.registerPayment(mesero, {
+      accountId: ACCOUNT_ID,
+      method: PaymentMethod.CASH,
+      amountReceived: 15,
+    });
+
+    expect(result.status).toBe('APPROVED');
+    expect(result.change?.toNumber()).toBe(3.7);
+    expect(tx.payment.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        method: PaymentMethod.CASH,
+        amountReceived: new Prisma.Decimal('15'),
+        change: new Prisma.Decimal('3.70'),
+      }),
+    }));
+  });
+
+  it('H18 rechaza tarjetas que no sean las tarjetas de prueba autorizadas', async () => {
+    const { service, db } = setup();
+
+    await expect(service.registerPayment(mesero, {
+      accountId: ACCOUNT_ID,
+      method: PaymentMethod.CARD,
+      cardLast4: '1234',
+    })).rejects.toBeInstanceOf(BadRequestException);
+
+    expect(db.$transaction).not.toHaveBeenCalled();
+  });
+
+  it('H18 impide mezclar datos de efectivo y tarjeta', async () => {
+    const { service, db } = setup();
+
+    await expect(service.registerPayment(mesero, {
+      accountId: ACCOUNT_ID,
+      method: PaymentMethod.CARD,
+      cardLast4: '4242',
+      amountReceived: 15,
+    })).rejects.toBeInstanceOf(BadRequestException);
+
+    await expect(service.registerPayment(mesero, {
+      accountId: ACCOUNT_ID,
+      method: PaymentMethod.CASH,
+      amountReceived: 15,
+      cardLast4: '4242',
+    })).rejects.toBeInstanceOf(BadRequestException);
+
+    expect(db.$transaction).not.toHaveBeenCalled();
+  });
+
+
 });
