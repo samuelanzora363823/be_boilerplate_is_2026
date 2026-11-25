@@ -458,3 +458,65 @@ describe('LoyaltyService H20 saldo y movimientos', () => {
     expect(repository.findMovements).toHaveBeenCalledWith(ACCOUNT_ID);
   });
 });
+
+describe('LoyaltyService H22 regla vigente en la acumulación de H20', () => {
+  const PAYMENT_ID = '44444444-4444-4444-8444-444444444444';
+
+  function setupAccrual(rule: { pointsPerDollar: Prisma.Decimal } | null) {
+    const repository = {
+      findCurrentRule: vi.fn().mockResolvedValue(
+        rule && { id: 'rule', updatedAt: new Date(), ...rule },
+      ),
+      creditPoints: vi.fn().mockResolvedValue(0),
+    };
+    return { repository, service: new LoyaltyService(repository as never) };
+  }
+
+  it('usa la tasa guardada por el gerente', async () => {
+    const { repository, service } = setupAccrual({
+      pointsPerDollar: new Prisma.Decimal('1.50'),
+    });
+
+    await service.processApprovedPayment(USER_ID, PAYMENT_ID, 10);
+
+    expect(repository.creditPoints).toHaveBeenCalledWith(USER_ID, PAYMENT_ID, 15);
+  });
+
+  it('sin regla guardada usa 1 punto por dólar', async () => {
+    const { repository, service } = setupAccrual(null);
+
+    await service.processApprovedPayment(USER_ID, PAYMENT_ID, 11.3);
+
+    expect(repository.creditPoints).toHaveBeenCalledWith(USER_ID, PAYMENT_ID, 11);
+  });
+
+  it('redondea hacia abajo sin errores de punto flotante', async () => {
+    const { repository, service } = setupAccrual({
+      pointsPerDollar: new Prisma.Decimal('1.15'),
+    });
+
+    await service.processApprovedPayment(USER_ID, PAYMENT_ID, 100);
+
+    // Con Number, 100 * 1.15 = 114.99999999999999 y se perdería un punto.
+    expect(repository.creditPoints).toHaveBeenCalledWith(USER_ID, PAYMENT_ID, 115);
+  });
+
+  it('pago sin cliente: no consulta la regla ni acredita', async () => {
+    const { repository, service } = setupAccrual(null);
+
+    await service.processApprovedPayment(null, PAYMENT_ID, 50);
+
+    expect(repository.findCurrentRule).not.toHaveBeenCalled();
+    expect(repository.creditPoints).not.toHaveBeenCalled();
+  });
+
+  it('pago ya acreditado: no falla ni duplica puntos', async () => {
+    const { repository, service } = setupAccrual(null);
+    repository.creditPoints.mockResolvedValue(null);
+
+    await expect(
+      service.processApprovedPayment(USER_ID, PAYMENT_ID, 20),
+    ).resolves.toBeUndefined();
+    expect(repository.creditPoints).toHaveBeenCalledTimes(1);
+  });
+});
