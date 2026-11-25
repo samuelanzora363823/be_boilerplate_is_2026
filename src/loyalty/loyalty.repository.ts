@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '@Prisma/services';
 import {
+  LoyaltyDiscountType,
   LoyaltyMovementType,
   LoyaltyRedemptionReleaseReason,
   LoyaltyRedemptionMovementType,
@@ -9,6 +10,36 @@ import {
 } from '@PrismaClient';
 
 const UNIQUE_CONSTRAINT_VIOLATION = 'P2002';
+
+// H22: campos que el gerente ve de cada beneficio.
+const ADMIN_BENEFIT_SELECT = {
+  id: true,
+  name: true,
+  pointsRequired: true,
+  discountType: true,
+  discountValue: true,
+  active: true,
+  createdAt: true,
+  updatedAt: true,
+  updatedBy: { select: { id: true, email: true } },
+} satisfies Prisma.LoyaltyBenefitSelect;
+
+export type AdminBenefitRow = Prisma.LoyaltyBenefitGetPayload<{
+  select: typeof ADMIN_BENEFIT_SELECT;
+}>;
+
+export interface BenefitInput {
+  name: string;
+  pointsRequired: number;
+  discountType: LoyaltyDiscountType;
+  discountValue: Prisma.Decimal;
+}
+
+// H22: resultado de escribir un beneficio; el servicio lo traduce a HTTP.
+export type BenefitWriteResult =
+  | { status: 'ok'; benefit: AdminBenefitRow }
+  | { status: 'duplicate' }
+  | { status: 'not_found' };
 
 @Injectable()
 export class LoyaltyRepository {
@@ -512,5 +543,191 @@ export class LoyaltyRepository {
 
       throw error;
     }
+  }
+
+  // ==========================================
+  // H22: configuración de reglas y beneficios
+  // ==========================================
+
+  // Regla global vigente. Si no existe, quien llama usa la tasa por defecto.
+  findCurrentRule() {
+    return this.prisma.loyaltyRule.findFirst({
+      orderBy: { createdAt: 'asc' },
+      select: { id: true, pointsPerDollar: true, updatedAt: true },
+    });
+  }
+
+  // Actualiza la tasa y registra el cambio en una sola transacción. El bloqueo
+  // consultivo serializa a los gerentes que guardan a la vez, de modo que la
+  // regla global no se duplica y cada historial guarda el valor anterior real.
+  updateRuleWithHistory(
+    pointsPerDollar: Prisma.Decimal,
+    changedById: string,
+    defaultPointsPerDollar: Prisma.Decimal,
+  ) {
+    return this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`
+        SELECT 1 AS locked
+        FROM pg_advisory_xact_lock(hashtext('nucleo_digital:loyalty_rules'))
+      `;
+
+      const current = await tx.loyaltyRule.findFirst({
+        orderBy: { createdAt: 'asc' },
+        select: { id: true, pointsPerDollar: true },
+      });
+
+      const rule = current
+        ? await tx.loyaltyRule.update({
+            where: { id: current.id },
+            data: { pointsPerDollar },
+            select: { id: true, pointsPerDollar: true, updatedAt: true },
+          })
+        : await tx.loyaltyRule.create({
+            data: { pointsPerDollar },
+            select: { id: true, pointsPerDollar: true, updatedAt: true },
+          });
+
+      await tx.loyaltyRuleHistory.create({
+        data: {
+          loyaltyRuleId: rule.id,
+          previousPoints: current?.pointsPerDollar ?? defaultPointsPerDollar,
+          newPoints: pointsPerDollar,
+          changedById,
+        },
+      });
+
+      return rule;
+    });
+  }
+
+  findRuleHistory(limit: number) {
+    return this.prisma.loyaltyRuleHistory.findMany({
+      orderBy: { changedAt: 'desc' },
+      take: limit,
+      select: {
+        id: true,
+        previousPoints: true,
+        newPoints: true,
+        changedAt: true,
+        changedBy: { select: { id: true, email: true } },
+      },
+    });
+  }
+
+  // A diferencia de findActiveBenefits (H21), incluye los inactivos.
+  findAllBenefits() {
+    return this.prisma.loyaltyBenefit.findMany({
+      orderBy: [{ active: 'desc' }, { pointsRequired: 'asc' }, { name: 'asc' }],
+      select: ADMIN_BENEFIT_SELECT,
+    });
+  }
+
+  createBenefit(
+    data: BenefitInput,
+    userId: string,
+  ): Promise<BenefitWriteResult> {
+    return this.writeBenefit(async (tx) => {
+      if (await this.benefitNameTaken(tx, data.name)) {
+        return { status: 'duplicate' };
+      }
+      const benefit = await tx.loyaltyBenefit.create({
+        data: { ...data, createdById: userId, updatedById: userId },
+        select: ADMIN_BENEFIT_SELECT,
+      });
+      return { status: 'ok', benefit };
+    });
+  }
+
+  updateBenefit(
+    id: string,
+    data: BenefitInput,
+    userId: string,
+  ): Promise<BenefitWriteResult> {
+    return this.writeBenefit(async (tx) => {
+      if (!(await this.lockBenefitForUpdate(tx, id))) {
+        return { status: 'not_found' };
+      }
+      if (await this.benefitNameTaken(tx, data.name, id)) {
+        return { status: 'duplicate' };
+      }
+      const benefit = await tx.loyaltyBenefit.update({
+        where: { id },
+        data: { ...data, updatedById: userId },
+        select: ADMIN_BENEFIT_SELECT,
+      });
+      return { status: 'ok', benefit };
+    });
+  }
+
+  // Desactivar no borra el beneficio ni toca sus canjes: H21 deja de
+  // ofrecerlo y rechaza canjes nuevos, pero los existentes se conservan.
+  setBenefitActive(
+    id: string,
+    active: boolean,
+    userId: string,
+  ): Promise<BenefitWriteResult> {
+    return this.writeBenefit(async (tx) => {
+      if (!(await this.lockBenefitForUpdate(tx, id))) {
+        return { status: 'not_found' };
+      }
+      const benefit = await tx.loyaltyBenefit.update({
+        where: { id },
+        data: { active, updatedById: userId },
+        select: ADMIN_BENEFIT_SELECT,
+      });
+      return { status: 'ok', benefit };
+    });
+  }
+
+  // El bloqueo consultivo serializa altas y ediciones para que la comparación
+  // de nombres sin distinguir mayúsculas no tenga carreras.
+  private async writeBenefit(
+    callback: (tx: Prisma.TransactionClient) => Promise<BenefitWriteResult>,
+  ): Promise<BenefitWriteResult> {
+    try {
+      return await this.prisma.$transaction(async (tx) => {
+        await tx.$queryRaw`
+          SELECT 1 AS locked
+          FROM pg_advisory_xact_lock(hashtext('nucleo_digital:loyalty_benefits'))
+        `;
+        return callback(tx);
+      });
+    } catch (error) {
+      // Respaldo: índice único loyalty_benefits_name_key.
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === UNIQUE_CONSTRAINT_VIOLATION
+      ) {
+        return { status: 'duplicate' };
+      }
+      throw error;
+    }
+  }
+
+  // FOR UPDATE espera a los canjes en curso de H21 (que toman FOR SHARE).
+  private async lockBenefitForUpdate(
+    tx: Prisma.TransactionClient,
+    id: string,
+  ): Promise<boolean> {
+    const rows = await tx.$queryRaw<Array<{ id: string }>>`
+      SELECT "id" FROM "loyalty_benefits"
+      WHERE "id" = ${id}::uuid
+      FOR UPDATE
+    `;
+    return rows.length > 0;
+  }
+
+  private async benefitNameTaken(
+    tx: Prisma.TransactionClient,
+    name: string,
+    excludeId?: string,
+  ): Promise<boolean> {
+    const rows = await tx.$queryRaw<Array<{ id: string }>>`
+      SELECT "id" FROM "loyalty_benefits"
+      WHERE lower("name") = lower(${name})
+        AND (${excludeId ?? null}::uuid IS NULL OR "id" <> ${excludeId ?? null}::uuid)
+      LIMIT 1
+    `;
+    return rows.length > 0;
   }
 }

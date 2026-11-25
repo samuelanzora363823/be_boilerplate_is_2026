@@ -12,9 +12,7 @@ import {
 } from '@PrismaClient';
 import { LoyaltyRepository } from './loyalty.repository.js';
 import type { CreateRedemptionDto } from './dto/create-redemption.dto.js';
-
-// H22's configurable rule is not in this branch yet; retain its default rate.
-const DEFAULT_POINTS_PER_DOLLAR = 1;
+import { DEFAULT_POINTS_PER_DOLLAR } from './loyalty.constants.js';
 
 /**
  * H20: saldo de puntos del cliente autenticado.
@@ -381,7 +379,12 @@ export class LoyaltyService {
       );
     }
 
-    const points = Math.floor(amountPaid * pointsPerDollar);
+    // Decimal evita errores de flotantes con tasas decimales de H22
+    // (por ejemplo, 100 × 1.15 da 114.99999… con Number).
+    const points = new Prisma.Decimal(amountPaid)
+      .mul(pointsPerDollar)
+      .floor()
+      .toNumber();
 
     if (points <= 0) {
       return { credited: false, points: 0 };
@@ -410,11 +413,17 @@ export class LoyaltyService {
       return;
     }
 
+    // H22: la tasa se lee al acreditar, así que un cambio de regla solo
+    // afecta pagos posteriores y no recalcula puntos ya acreditados.
+    const rule = await this.loyaltyRepository.findCurrentRule();
+    const pointsPerDollar =
+      rule?.pointsPerDollar.toNumber() ?? DEFAULT_POINTS_PER_DOLLAR;
+
     await this.registerPurchasePoints(
       userId,
       paymentId,
       amount,
-      DEFAULT_POINTS_PER_DOLLAR,
+      pointsPerDollar,
     );
   }
 }

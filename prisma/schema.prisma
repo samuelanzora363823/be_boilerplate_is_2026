@@ -55,6 +55,7 @@ model User {
   reservations       Reservation[]
   loyaltyRuleChanges     LoyaltyRuleHistory[]
   loyaltyBenefitsCreated LoyaltyBenefit[] @relation("LoyaltyBenefitCreator")
+  loyaltyBenefitsUpdated LoyaltyBenefit[] @relation("LoyaltyBenefitUpdater")
   reviews            Review[]
 
   // H20 - Cuenta de puntos del cliente
@@ -598,10 +599,14 @@ model LoyaltyBenefit {
   discountValue  Decimal             @map("discount_value") @db.Decimal(10, 2)
   active         Boolean             @default(true)
   createdById    String              @map("created_by_id") @db.Uuid
+  // H22: último gerente que creó, editó o cambió el estado del beneficio.
+  // Es opcional porque los beneficios previos a H22 no lo registraron.
+  updatedById    String?             @map("updated_by_id") @db.Uuid
   createdAt      DateTime            @default(now()) @map("created_at")
   updatedAt      DateTime            @updatedAt @map("updated_at")
 
   createdBy   User                @relation("LoyaltyBenefitCreator", fields: [createdById], references: [id])
+  updatedBy   User?               @relation("LoyaltyBenefitUpdater", fields: [updatedById], references: [id], onDelete: Restrict)
   redemptions LoyaltyRedemption[]
 
   @@index([active, pointsRequired])
