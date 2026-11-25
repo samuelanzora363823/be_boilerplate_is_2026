@@ -365,3 +365,96 @@ describe('LoyaltyService H21', () => {
     expect(repository.transaction).toHaveBeenCalledTimes(3);
   });
 });
+
+describe('LoyaltyService H20 saldo y movimientos', () => {
+  function setupH20(
+    account: { id: string; balance: number; reservedPoints: number } | null,
+    movements: unknown[] = [],
+  ) {
+    const repository = {
+      findAccountByUserId: vi.fn().mockResolvedValue(account),
+      findMovements: vi.fn().mockResolvedValue(movements),
+      creditPoints: vi.fn(),
+      transaction: vi.fn(),
+      reservePoints: vi.fn(),
+      createRedemption: vi.fn(),
+    };
+    return { repository, service: new LoyaltyService(repository as never) };
+  }
+
+  it('cliente sin cuenta: responde saldo en cero sin crear registros', async () => {
+    const { repository, service } = setupH20(null);
+
+    await expect(service.getBalance(USER_ID)).resolves.toEqual({
+      totalPoints: 0,
+      reservedPoints: 0,
+      availablePoints: 0,
+      balance: 0,
+    });
+    expect(repository.findAccountByUserId).toHaveBeenCalledWith(USER_ID);
+    expect(repository.creditPoints).not.toHaveBeenCalled();
+    expect(repository.transaction).not.toHaveBeenCalled();
+  });
+
+  it('sin reservas: el disponible es igual al total', async () => {
+    const { service } = setupH20({ id: ACCOUNT_ID, balance: 350, reservedPoints: 0 });
+
+    await expect(service.getBalance(USER_ID)).resolves.toEqual({
+      totalPoints: 350,
+      reservedPoints: 0,
+      availablePoints: 350,
+      balance: 350,
+    });
+  });
+
+  it('con reservas: disponible = total - reservados y balance conserva el total', async () => {
+    const { service } = setupH20({ id: ACCOUNT_ID, balance: 500, reservedPoints: 200 });
+
+    await expect(service.getBalance(USER_ID)).resolves.toEqual({
+      totalPoints: 500,
+      reservedPoints: 200,
+      availablePoints: 300,
+      balance: 500,
+    });
+  });
+
+  it('nunca devuelve un disponible negativo', async () => {
+    const { service } = setupH20({ id: ACCOUNT_ID, balance: 100, reservedPoints: 150 });
+
+    const result = await service.getBalance(USER_ID);
+    expect(result.availablePoints).toBe(0);
+    expect(result.totalPoints).toBe(100);
+    expect(result.reservedPoints).toBe(150);
+  });
+
+  it('consulta únicamente la cuenta del usuario autenticado', async () => {
+    const { repository, service } = setupH20(null);
+
+    await service.getBalance(USER_ID);
+    await service.getMovements(USER_ID);
+
+    expect(repository.findAccountByUserId).toHaveBeenCalledTimes(2);
+    expect(repository.findAccountByUserId).toHaveBeenNthCalledWith(1, USER_ID);
+    expect(repository.findAccountByUserId).toHaveBeenNthCalledWith(2, USER_ID);
+  });
+
+  it('cliente sin cuenta: responde movimientos [] sin consultar el historial', async () => {
+    const { repository, service } = setupH20(null);
+
+    await expect(service.getMovements(USER_ID)).resolves.toEqual([]);
+    expect(repository.findMovements).not.toHaveBeenCalled();
+  });
+
+  it('con cuenta: devuelve los movimientos de esa cuenta', async () => {
+    const movements = [
+      { id: 'm1', type: 'EARNED', points: 22, description: 'Puntos acumulados por compra', createdAt: new Date() },
+    ];
+    const { repository, service } = setupH20(
+      { id: ACCOUNT_ID, balance: 22, reservedPoints: 0 },
+      movements,
+    );
+
+    await expect(service.getMovements(USER_ID)).resolves.toEqual(movements);
+    expect(repository.findMovements).toHaveBeenCalledWith(ACCOUNT_ID);
+  });
+});

@@ -29,6 +29,28 @@ describe('LoyaltyRepository benefits', () => {
   });
 });
 
+describe('LoyaltyRepository H20 saldo', () => {
+  it('consulta la cuenta del usuario con saldo total y puntos reservados', async () => {
+    const account = {
+      id: '22222222-2222-4222-8222-222222222222',
+      balance: 500,
+      reservedPoints: 200,
+    };
+    const findUnique = vi.fn().mockResolvedValue(account);
+    const repository = new LoyaltyRepository({
+      loyaltyAccount: { findUnique },
+    } as never);
+
+    await expect(
+      repository.findAccountByUserId('11111111-1111-4111-8111-111111111111'),
+    ).resolves.toEqual(account);
+    expect(findUnique).toHaveBeenCalledWith({
+      where: { userId: '11111111-1111-4111-8111-111111111111' },
+      select: { id: true, balance: true, reservedPoints: true },
+    });
+  });
+});
+
 describe('LoyaltyRepository redemption transaction units (mocks)', () => {
   it('propaga el error al insertar RESERVED después de crear el canje', async () => {
     const redemption = {

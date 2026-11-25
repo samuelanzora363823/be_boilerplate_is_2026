@@ -20,6 +20,7 @@ export class LoyaltyRepository {
       select: {
         id: true,
         balance: true,
+        reservedPoints: true,
       },
     });
   }
