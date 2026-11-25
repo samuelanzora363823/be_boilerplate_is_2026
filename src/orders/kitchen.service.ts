@@ -108,40 +108,59 @@ export class KitchenService {
   }
 
   // H7: toma una comanda evitando que dos usuarios la tomen simultaneamente.
+  // La comanda y sus platillos pasan a IN_PREPARATION en la misma transaccion
+  // para que H8 pueda marcar cada platillo como listo.
   async take(user: User, id: string) {
     const branchId = await this.branch(user);
 
-    const order = await this.db.order.findFirst({
-      where: {
-        id,
-        branchId,
-      },
-      select: {
-        id: true,
-        status: true,
-      },
+    const order = await this.db.$transaction(async (tx) => {
+      const existing = await tx.order.findFirst({
+        where: {
+          id,
+          branchId,
+        },
+        select: {
+          id: true,
+          status: true,
+        },
+      });
+
+      if (!existing) {
+        throw new NotFoundException('Comanda no encontrada');
+      }
+
+      // Actualizacion condicional: el UPDATE bloquea la fila del pedido y una
+      // toma concurrente reevalua el estado tras el commit, obteniendo count 0.
+      const result = await tx.order.updateMany({
+        where: {
+          id,
+          branchId,
+          status: 'RECEIVED',
+        },
+        data: {
+          status: 'IN_PREPARATION',
+        },
+      });
+
+      if (result.count === 0) {
+        throw new ConflictException(
+          'La comanda ya fue tomada o no esta disponible',
+        );
+      }
+
+      // Solo los platillos recibidos; los cancelados conservan su estado.
+      await tx.orderItem.updateMany({
+        where: {
+          orderId: id,
+          status: 'RECEIVED',
+        },
+        data: {
+          status: 'IN_PREPARATION',
+        },
+      });
+
+      return existing;
     });
-
-    if (!order) {
-      throw new NotFoundException('Comanda no encontrada');
-    }
-
-    const result = await this.db.order.updateMany({
-      where: {
-        id,
-        branchId,
-        status: 'RECEIVED',
-      },
-      data: {
-        status: 'IN_PREPARATION',
-      },
-    });
-
-    if (result.count === 0) {
-      throw new ConflictException(
-        'La comanda ya fue tomada o no esta disponible',
-      );
-    }
 
     this.kitchen.orderUpdated(branchId, {
       id: order.id,

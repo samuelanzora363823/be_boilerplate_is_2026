@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 
 import {
+  OrderItemStatus,
   OrderStatus,
   UserRole,
 } from '../generated/prisma/client.js';
@@ -28,24 +29,40 @@ describe('KitchenService - H7', () => {
     orders?: any[];
     existingOrder?: { id: string; status: OrderStatus } | null;
     updateMany?: () => Promise<{ count: number }>;
+    itemUpdateMany?: (args: any) => Promise<{ count: number }>;
   } = {}) {
+    const order = {
+      findMany: vi.fn().mockResolvedValue(options.orders ?? []),
+      findFirst: vi.fn().mockResolvedValue(
+        options.existingOrder === undefined
+          ? { id: ORDER_ID, status: OrderStatus.RECEIVED }
+          : options.existingOrder,
+      ),
+      updateMany: vi.fn(
+        options.updateMany ?? (() => Promise.resolve({ count: 1 })),
+      ),
+    };
+
+    const orderItem = {
+      updateMany: vi.fn(
+        options.itemUpdateMany ?? (() => Promise.resolve({ count: 2 })),
+      ),
+    };
+
+    const tx = { order, orderItem };
+
     const db = {
       staffBranch: {
         findMany: vi.fn().mockResolvedValue(
           options.assignments ?? [{ branchId: BRANCH_ID }],
         ),
       },
-      order: {
-        findMany: vi.fn().mockResolvedValue(options.orders ?? []),
-        findFirst: vi.fn().mockResolvedValue(
-          options.existingOrder === undefined
-            ? { id: ORDER_ID, status: OrderStatus.RECEIVED }
-            : options.existingOrder,
-        ),
-        updateMany: vi.fn(
-          options.updateMany ?? (() => Promise.resolve({ count: 1 })),
-        ),
-      },
+      order,
+      orderItem,
+      $transaction: vi.fn(
+        async (callback: (client: typeof tx) => Promise<unknown>) =>
+          callback(tx),
+      ),
     };
 
     const kitchen = {
@@ -117,7 +134,7 @@ describe('KitchenService - H7', () => {
     );
   });
 
-  it('cambia el estado de una comanda recibida a En preparacion', async () => {
+  it('cambia la comanda y sus platillos a En preparacion en una transaccion', async () => {
     const { service, db, kitchen } = createService();
 
     const result = await service.take(user, ORDER_ID);
@@ -126,6 +143,8 @@ describe('KitchenService - H7', () => {
       id: ORDER_ID,
       status: 'En preparacion',
     });
+
+    expect(db.$transaction).toHaveBeenCalledTimes(1);
 
     expect(db.order.updateMany).toHaveBeenCalledWith({
       where: {
@@ -138,33 +157,101 @@ describe('KitchenService - H7', () => {
       },
     });
 
-    expect(kitchen.orderUpdated).toHaveBeenCalled();
+    expect(db.orderItem.updateMany).toHaveBeenCalledWith({
+      where: {
+        orderId: ORDER_ID,
+        status: OrderItemStatus.RECEIVED,
+      },
+      data: {
+        status: OrderItemStatus.IN_PREPARATION,
+      },
+    });
+
+    // La comanda se toma antes de actualizar sus platillos.
+    expect(db.order.updateMany.mock.invocationCallOrder[0]).toBeLessThan(
+      db.orderItem.updateMany.mock.invocationCallOrder[0],
+    );
+
+    expect(kitchen.orderUpdated).toHaveBeenCalledWith(BRANCH_ID, {
+      id: ORDER_ID,
+      status: 'En preparacion',
+    });
   });
 
   it('devuelve 404 cuando la comanda no existe en la sucursal', async () => {
-    const { service, db } = createService({ existingOrder: null });
+    const { service, db, kitchen } = createService({ existingOrder: null });
 
     await expect(service.take(user, ORDER_ID)).rejects.toBeInstanceOf(
       NotFoundException,
     );
 
     expect(db.order.updateMany).not.toHaveBeenCalled();
+    expect(db.orderItem.updateMany).not.toHaveBeenCalled();
+    expect(kitchen.orderUpdated).not.toHaveBeenCalled();
   });
 
-  it('devuelve 409 cuando la comanda ya no esta disponible', async () => {
-    const { service } = createService({
+  it('devuelve 409 sin tocar platillos cuando la comanda ya fue tomada', async () => {
+    const { service, db, kitchen } = createService({
+      existingOrder: { id: ORDER_ID, status: OrderStatus.IN_PREPARATION },
       updateMany: () => Promise.resolve({ count: 0 }),
     });
 
     await expect(service.take(user, ORDER_ID)).rejects.toBeInstanceOf(
       ConflictException,
     );
+
+    expect(db.orderItem.updateMany).not.toHaveBeenCalled();
+    expect(kitchen.orderUpdated).not.toHaveBeenCalled();
+  });
+
+  it('devuelve 409 y no actualiza platillos de una comanda cancelada', async () => {
+    const { service, db, kitchen } = createService({
+      existingOrder: { id: ORDER_ID, status: OrderStatus.CANCELLED },
+      updateMany: () => Promise.resolve({ count: 0 }),
+    });
+
+    await expect(service.take(user, ORDER_ID)).rejects.toBeInstanceOf(
+      ConflictException,
+    );
+
+    expect(db.orderItem.updateMany).not.toHaveBeenCalled();
+    expect(kitchen.orderUpdated).not.toHaveBeenCalled();
+  });
+
+  it('conserva cancelados los platillos cancelados de una comanda tomada', async () => {
+    const items = [
+      { id: 'item-1', orderId: ORDER_ID, status: OrderItemStatus.RECEIVED },
+      { id: 'item-2', orderId: ORDER_ID, status: OrderItemStatus.CANCELLED },
+      { id: 'item-3', orderId: ORDER_ID, status: OrderItemStatus.RECEIVED },
+    ];
+
+    // Simula el filtro de PostgreSQL aplicando el where recibido.
+    const { service } = createService({
+      itemUpdateMany: async ({ where, data }) => {
+        const matching = items.filter(
+          (item) =>
+            item.orderId === where.orderId && item.status === where.status,
+        );
+        matching.forEach((item) => {
+          item.status = data.status;
+        });
+        return { count: matching.length };
+      },
+    });
+
+    await service.take(user, ORDER_ID);
+
+    expect(items.map((item) => item.status)).toEqual([
+      OrderItemStatus.IN_PREPARATION,
+      OrderItemStatus.CANCELLED,
+      OrderItemStatus.IN_PREPARATION,
+    ]);
   });
 
   it('permite que solo una solicitud tome una comanda simultaneamente', async () => {
     let status: OrderStatus = OrderStatus.RECEIVED;
 
-    const { service } = createService({
+    const { service, db } = createService({
       updateMany: async () => {
         if (status !== OrderStatus.RECEIVED) {
           return { count: 0 };
@@ -196,6 +283,9 @@ describe('KitchenService - H7', () => {
     }
 
     expect(status).toBe(OrderStatus.IN_PREPARATION);
+
+    // Solo la toma ganadora actualiza los platillos.
+    expect(db.orderItem.updateMany).toHaveBeenCalledTimes(1);
   });
 });
 
