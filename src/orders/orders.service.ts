@@ -16,12 +16,14 @@ import {
 } from './dto.js';
 import type { User } from '../generated/prisma/client.js';
 import { Prisma } from '../generated/prisma/client.js';
+import { LoyaltyService } from '../loyalty/loyalty.service.js';
 
 @Injectable()
 export class OrdersService implements OnModuleInit {
   constructor(
     private readonly db: PrismaService,
     private readonly kitchen: KitchenGateway,
+    private readonly loyalty: LoyaltyService,
   ) {}
 
   async onModuleInit() {
@@ -41,6 +43,110 @@ export class OrdersService implements OnModuleInit {
     }
 
     return assignments[0].branchId;
+  }
+
+  /**
+   * Serializes table-order changes with H21 reservations. Lock order is
+   * LoyaltyAccount -> Account -> Order -> Redemption.
+   */
+  private async lockTableOrderForMutation(
+    tx: Prisma.TransactionClient,
+    orderId: string,
+  ) {
+    const initial = await tx.order.findUnique({
+      where: { id: orderId },
+      select: { id: true, accountId: true },
+    });
+    if (!initial) throw new NotFoundException('Pedido inexistente');
+    let preflightCustomerId: string | null | undefined;
+
+    if (initial.accountId) {
+      const owner = await tx.account.findUnique({
+        where: { id: initial.accountId },
+        select: { customerId: true },
+      });
+      preflightCustomerId = owner?.customerId;
+      if (owner?.customerId) {
+        await this.loyalty.lockLoyaltyAccountForPayment(tx, {
+          userId: owner.customerId,
+        });
+      }
+      await tx.$queryRaw`
+        SELECT "id" FROM "accounts"
+        WHERE "id" = ${initial.accountId}::uuid
+        FOR UPDATE
+      `;
+    }
+
+    await tx.$queryRaw`
+      SELECT "id" FROM "orders" WHERE "id" = ${orderId}::uuid FOR UPDATE
+    `;
+
+    const order = await tx.order.findUnique({
+      where: { id: orderId },
+      include: { items: true, account: { include: { table: true } } },
+    });
+    if (!order) throw new NotFoundException('Pedido inexistente');
+    if (order.accountId !== initial.accountId) {
+      throw new ConflictException('La cuenta del pedido cambió durante la operación');
+    }
+    if (initial.accountId && order.account?.customerId !== preflightCustomerId) {
+      throw new ConflictException('El cliente de la cuenta cambió durante la operación');
+    }
+
+    return order;
+  }
+
+  private async assertNoReservedRedemption(
+    tx: Prisma.TransactionClient,
+    accountId: string,
+  ) {
+    const reservedRedemption = await tx.loyaltyRedemption.findFirst({
+      where: { accountId, status: 'RESERVED' },
+      select: { id: true, expiresAt: true },
+    });
+    if (reservedRedemption) {
+      if (reservedRedemption.expiresAt <= new Date()) {
+        await this.loyalty.releaseExpiredRedemptionInTransaction(
+          tx,
+          reservedRedemption.id,
+          new Date(),
+        );
+        const stillReserved = await tx.loyaltyRedemption.findFirst({
+          where: { accountId, status: 'RESERVED' },
+          select: { id: true },
+        });
+        if (!stillReserved) return;
+      }
+      throw new ConflictException(
+        'No se puede modificar una compra con un canje de puntos reservado',
+      );
+    }
+  }
+
+  async myBranch(user: User) {
+    const branchId = await this.branch(user);
+    const branch = await this.db.branch.findUnique({
+      where: { id: branchId },
+      select: {
+        id: true,
+        name: true,
+        isActive: true,
+        openingTime: true,
+        closingTime: true,
+      },
+    });
+
+    if (!branch || !branch.isActive) {
+      throw new NotFoundException('La sucursal asignada no está disponible');
+    }
+
+    return {
+      id: branch.id,
+      name: branch.name,
+      openingTime: branch.openingTime,
+      closingTime: branch.closingTime,
+    };
   }
 
   async tables(user: User) {
@@ -91,14 +197,6 @@ export class OrdersService implements OnModuleInit {
   async open(user: User, input: OpenAccountDto) {
     const branchId = await this.branch(user);
 
-    const table = await this.db.restaurantTable.findUnique({
-      where: { id: input.tableId },
-    });
-
-    if (!table || table.branchId !== branchId) {
-      throw new NotFoundException('Mesa no existe en tu sucursal');
-    }
-
     let customerId: string | undefined;
 
     if (input.customerEmail) {
@@ -115,10 +213,21 @@ export class OrdersService implements OnModuleInit {
       customerId = customer.id;
     }
 
-    // El índice parcial único impide dos cuentas abiertas
-    // simultáneamente para la misma mesa.
+    // Se serializa con H10: crear una reserva también bloquea la sucursal.
     try {
       return await this.db.$transaction(async (tx) => {
+        await tx.$queryRaw`
+          SELECT id FROM branches WHERE id = ${branchId}::uuid FOR UPDATE
+        `;
+
+        const table = await tx.restaurantTable.findUnique({
+          where: { id: input.tableId },
+        });
+
+        if (!table || table.branchId !== branchId) {
+          throw new NotFoundException('Mesa no existe en tu sucursal');
+        }
+
         const current = await tx.account.findFirst({
           where: {
             tableId: table.id,
@@ -142,6 +251,34 @@ export class OrdersService implements OnModuleInit {
 
         if (table.status !== 'FREE') {
           throw new ConflictException('Mesa no disponible');
+        }
+
+        // La apertura de cuenta representa la ocupación en este momento.
+        // Se rechaza si una reserva confirmada incluye el instante actual.
+        const now = new Date();
+        const activeReservation = await tx.reservation.findFirst({
+          where: {
+            tableId: table.id,
+            status: 'CONFIRMED',
+            dateTime: { lte: now },
+          },
+          select: {
+            dateTime: true,
+            durationMinutes: true,
+          },
+          orderBy: { dateTime: 'desc' },
+        });
+
+        if (activeReservation) {
+          const reservationEnd = new Date(
+            activeReservation.dateTime.getTime() +
+              activeReservation.durationMinutes * 60_000,
+          );
+          if (reservationEnd > now) {
+            throw new ConflictException(
+              'La mesa tiene una reserva confirmada para este horario',
+            );
+          }
         }
 
         const account = await tx.account.create({
@@ -188,6 +325,21 @@ export class OrdersService implements OnModuleInit {
     }
 
     const result = await this.db.$transaction(async (tx) => {
+      const preflightAccount = await tx.account.findUnique({
+        where: { id: input.accountId },
+        select: { customerId: true },
+      });
+      if (preflightAccount?.customerId) {
+        await this.loyalty.lockLoyaltyAccountForPayment(tx, {
+          userId: preflightAccount.customerId,
+        });
+      }
+      // Match H21's account lock so a new order cannot change a reserved subtotal.
+      await tx.$queryRaw`
+        SELECT "id" FROM "accounts"
+        WHERE "id" = ${input.accountId}::uuid
+        FOR UPDATE
+      `;
       const account = await tx.account.findUnique({
         where: { id: input.accountId },
         include: { table: true },
@@ -195,6 +347,9 @@ export class OrdersService implements OnModuleInit {
 
       if (!account) {
         throw new NotFoundException('Cuenta inexistente');
+      }
+      if (account.customerId !== preflightAccount?.customerId) {
+        throw new ConflictException('El cliente de la cuenta cambió durante la operación');
       }
 
       if (account.branchId !== branchId || account.waiterId !== user.id) {
@@ -206,6 +361,8 @@ export class OrdersService implements OnModuleInit {
       if (account.status !== 'OPEN' || account.table.status !== 'OCCUPIED') {
         throw new ConflictException('Cuenta no abierta');
       }
+
+      await this.assertNoReservedRedemption(tx, account.id);
 
       const dishes = await tx.dish.findMany({
         where: {
@@ -340,13 +497,7 @@ export class OrdersService implements OnModuleInit {
     if (new Set(ids).size !== ids.length)
       throw new BadRequestException('No repitas ítems');
     const result = await this.db.$transaction(async (tx) => {
-      // Bloquea la orden hasta completar el cambio: cocina no debe poder cambiar su estado a mitad de la operación.
-      await tx.$queryRaw`SELECT id FROM orders WHERE id = ${orderId}::uuid FOR UPDATE`;
-      const order = await tx.order.findUnique({
-        where: { id: orderId },
-        include: { items: true, account: { include: { table: true } } },
-      });
-      if (!order) throw new NotFoundException('Pedido inexistente');
+      const order = await this.lockTableOrderForMutation(tx, orderId);
       if (
         !order.account ||
         order.branchId !== branchId ||
@@ -360,6 +511,7 @@ export class OrdersService implements OnModuleInit {
         throw new ConflictException('El pedido ya no está Recibido');
       if (order.account.status !== 'OPEN')
         throw new ConflictException('La cuenta ya no está abierta');
+      await this.assertNoReservedRedemption(tx, order.account.id);
       if (
         ids.length !== order.items.length ||
         order.items.some((item) => !ids.includes(item.id))
@@ -411,12 +563,7 @@ export class OrdersService implements OnModuleInit {
   async cancel(user: User, orderId: string) {
     const branchId = await this.branch(user);
     const result = await this.db.$transaction(async (tx) => {
-      await tx.$queryRaw`SELECT id FROM orders WHERE id = ${orderId}::uuid FOR UPDATE`;
-      const order = await tx.order.findUnique({
-        where: { id: orderId },
-        include: { items: true, account: { include: { table: true } } },
-      });
-      if (!order) throw new NotFoundException('Pedido inexistente');
+      const order = await this.lockTableOrderForMutation(tx, orderId);
       if (
         !order.account ||
         order.branchId !== branchId ||
@@ -430,6 +577,7 @@ export class OrdersService implements OnModuleInit {
         throw new ConflictException('El pedido ya no está Recibido');
       if (order.account.status !== 'OPEN')
         throw new ConflictException('La cuenta ya no está abierta');
+      await this.assertNoReservedRedemption(tx, order.account.id);
       await tx.order.update({
         where: { id: orderId },
         data: { status: 'CANCELLED' },
@@ -465,6 +613,12 @@ export class OrdersService implements OnModuleInit {
           select: {
             id: true,
             email: true,
+          },
+        },
+        receipt: {
+          select: {
+            id: true,
+            receiptNumber: true,
           },
         },
         orders: {
@@ -504,11 +658,25 @@ export class OrdersService implements OnModuleInit {
           ),
         ),
       new Prisma.Decimal(0),
-    );
+    ).toDecimalPlaces(2);
 
-    const discount = new Prisma.Decimal(0);
+    // Mantener el detalle sincronizado con el descuento reservado que aplicará
+    // PaymentsService al procesar el cobro de esta misma cuenta.
+    const redemption = await this.db.loyaltyRedemption.findFirst({
+      where: {
+        accountId: account.id,
+        status: 'RESERVED',
+        expiresAt: { gt: new Date() },
+      },
+      select: { discountAmount: true },
+    });
+    const discount = (redemption?.discountAmount ?? new Prisma.Decimal(0))
+      .toDecimalPlaces(2);
+    if (discount.lt(0) || discount.gt(subtotal)) {
+      throw new ConflictException('El descuento reservado no es compatible con el total de la cuenta.');
+    }
     const taxableAmount = subtotal.minus(discount);
-    const tax = taxableAmount.mul(0.13).toDecimalPlaces(2);
+    const tax = taxableAmount.mul(new Prisma.Decimal('0.13')).toDecimalPlaces(2);
     const total = taxableAmount.plus(tax).toDecimalPlaces(2);
 
     return {
@@ -518,6 +686,7 @@ export class OrdersService implements OnModuleInit {
       tableId: account.tableId,
       tableNumber: account.table.number,
       customer: account.customer,
+      receipt: account.receipt,
       orders: account.orders.map((order) => ({
         orderId: order.id,
         status: order.status,
@@ -585,6 +754,7 @@ export class OrdersService implements OnModuleInit {
           select: {
             id: true,
             status: true,
+            items: { select: { subtotal: true } },
           },
         },
       },
@@ -628,13 +798,39 @@ export class OrdersService implements OnModuleInit {
       );
     }
 
-    const total = new Prisma.Decimal(account.total)
-      .mul(1.13)
+    const subtotal = activeOrders.reduce(
+      (sum, order) => sum.plus(
+        order.items.reduce(
+          (itemSum, item) => itemSum.plus(item.subtotal),
+          new Prisma.Decimal(0),
+        ),
+      ),
+      new Prisma.Decimal(0),
+    ).toDecimalPlaces(2);
+
+    const redemption = await this.db.loyaltyRedemption.findFirst({
+      where: {
+        accountId: account.id,
+        status: 'RESERVED',
+        expiresAt: { gt: new Date() },
+      },
+      select: { discountAmount: true },
+    });
+    const discount = (redemption?.discountAmount ?? new Prisma.Decimal(0))
       .toDecimalPlaces(2);
+    if (discount.lt(0) || discount.gt(subtotal)) {
+      throw new ConflictException('El descuento reservado no es compatible con el total de la cuenta.');
+    }
+    const taxableAmount = subtotal.minus(discount);
+    const tax = taxableAmount.mul(new Prisma.Decimal('0.13')).toDecimalPlaces(2);
+    const total = taxableAmount.plus(tax).toDecimalPlaces(2);
 
     return {
       accountId: account.id,
       status: account.status,
+      subtotal,
+      discount,
+      tax,
       total,
       canPay: true,
     };

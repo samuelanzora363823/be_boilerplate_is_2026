@@ -18,6 +18,7 @@ import { ReportsModule } from './reports/reports.module.js';
 import { LoyaltyModule } from './loyalty/loyalty.module.js';
 import { RolesGuard } from './auth/guards/roles.guard.js';
 import { TablesModule } from './tables/tables.module.js';
+import { ReviewsModule } from './reviews/reviews.module.js';
 
 @Module({
   imports: [
@@ -39,6 +40,7 @@ import { TablesModule } from './tables/tables.module.js';
     ReportsModule,
     TablesModule,
     LoyaltyModule,
+    ReviewsModule,
   ],
   providers: [
     {

@@ -34,6 +34,11 @@ export class OrdersController {
     return this.orders.tables(user);
   }
 
+  @Get('my-branch')
+  myBranch(@CurrentUser() user: User) {
+    return this.orders.myBranch(user);
+  }
+
   @Get('orders/table/menu')
   menu(@CurrentUser() user: User) {
     return this.orders.menu(user);

@@ -1,4 +1,3 @@
-# La clave `version:` está obsoleta en Compose v2+ y se omite a propósito.
 name: si-be-boilerplate
 
 services:
@@ -11,17 +10,10 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
       POSTGRES_DB: ${POSTGRES_DB:-si_be_boilerplate}
     ports:
-      # Se publica en el host para poder correr `prisma migrate` y la API
-      # localmente sin entrar al contenedor.
-      - '${POSTGRES_PORT:-5432}:5432'
+      - '${POSTGRES_PORT:-5433}:5432'
     volumes:
-      # Postgres 18+ guarda los datos en un subdirectorio con el nombre de la
-      # major version, así que el mount va en /var/lib/postgresql y NO en
-      # /var/lib/postgresql/data (que era lo correcto hasta la 17).
       - pgdata:/var/lib/postgresql
     healthcheck:
-      # `api` espera a que este healthcheck pase antes de arrancar, para que
-      # las migraciones no fallen contra un Postgres que todavía inicializa.
       test:
         ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-si_be_boilerplate}']
       interval: 5s
@@ -41,22 +33,22 @@ services:
     environment:
       NODE_ENV: production
       PORT: 3000
-      # Dentro de la red de Compose el host de la base es el nombre del
-      # servicio (`postgres`), no `localhost`.
       DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-si_be_boilerplate}?schema=public
-      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET es obligatorio, copiá .env.example a .env}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET es obligatorio}
       JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-15m}
       REFRESH_TOKEN_EXPIRES_IN_DAYS: ${REFRESH_TOKEN_EXPIRES_IN_DAYS:-7}
       BCRYPT_SALT_ROUNDS: ${BCRYPT_SALT_ROUNDS:-12}
       KITCHEN_SOCKET_PORT: 3002
       FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-http://localhost:3001}
       DISH_UPLOAD_DIR: /app/uploads/dishes
+      SEED_GERENTE_PASSWORD: ${SEED_GERENTE_PASSWORD}
+      SEED_MESERO_PASSWORD: ${SEED_MESERO_PASSWORD}
+      SEED_COCINA_PASSWORD: ${SEED_COCINA_PASSWORD}
     ports:
       - '${PORT:-3000}:3000'
       - '${KITCHEN_SOCKET_PORT:-3002}:3002'
     volumes:
       - dish_images:/app/uploads/dishes
-    # Aplica las migraciones pendientes antes de levantar el servidor.
     command: sh -c "npx prisma migrate deploy && node dist/main.js"
 
 volumes:
